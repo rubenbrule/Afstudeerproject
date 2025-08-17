@@ -1,20 +1,24 @@
-import Sidebar from "./components/Sidebar";
-import Header from "./components/Header";
-import PrViewer from "./components/PrViewer";
+import { useState } from 'react'
+import Sidebar from './components/Sidebar'
+import Header from './components/Header'
+import PrViewer from './components/PrViewer'
+import PromptBeheer from './components/PromptBeheer'
 
-function App() {
+export default function App() {
+  const [currentPage, setCurrentPage] = useState('home') // 'home' of 'prompts'
+
   return (
-    <div className="flex h-screen">
-      <Sidebar />
-      <div className="flex flex-col flex-1">
-        <Header />
-        <main className="p-6 bg-white flex-1 overflow-y-auto">
-          {/* <h2 className="text-2xl font-bold mb-4">Welkom bij het feedbacksysteem</h2> */}
-          <PrViewer />
+    <div style={{ display: 'flex', height: '100vh' }}>
+      <Sidebar onNavigate={setCurrentPage} currentPage={currentPage} />
+
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <Header currentPage={currentPage} />
+
+        <main style={{ padding: '20px', overflowY: 'auto' }}>
+          {currentPage === 'home' && <PrViewer />}
+          {currentPage === 'prompts' && <PromptBeheer />}
         </main>
       </div>
     </div>
-  );
+  )
 }
-
-export default App;

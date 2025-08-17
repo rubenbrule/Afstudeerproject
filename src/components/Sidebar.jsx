@@ -1,6 +1,6 @@
 import noviLogo from '../assets/img/NOVI.png';
 
-export default function Sidebar() {
+export default function Sidebar({ onNavigate, currentPage }) {
   return (
   <div class="flex flex-col items-center w-40 h-full overflow-hidden text-gray-700 bg-gray-100 rounded">
     <div className="flex justify-center items-center w-full py-4">
@@ -12,7 +12,16 @@ export default function Sidebar() {
     </div>
     <div class="w-full px-2">
       <div class="flex flex-col items-center w-full mt-1">
-        <a class="flex items-center w-full h-12 px-3 mt-2 rounded bg-gray-300" href="#">
+        <a
+          href="#"
+          className={`flex items-center w-full h-12 px-3 mt-2 rounded ${
+          currentPage === 'home' ? 'bg-gray-300' : 'hover:bg-gray-200'
+          }`}
+          onClick={(e) => {
+          e.preventDefault()
+          onNavigate('home')
+          }}
+        >
           <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
             stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -54,14 +63,22 @@ export default function Sidebar() {
           </svg>
           <span class="ml-2 text-sm font-medium">Instellingen</span>
         </a>
-        <a class="relative flex items-center w-full h-12 px-3 mt-2 rounded hover:bg-gray-300" href="#">
+        <a
+          href="#"
+          className={`flex items-center w-full h-12 px-3 mt-2 rounded ${
+          currentPage === 'prompts' ? 'bg-gray-300' : 'hover:bg-gray-200'
+          }`}
+          onClick={(e) => {
+          e.preventDefault()
+          onNavigate('prompts')
+          }}
+        >
           <svg class="w-6 h-6 stroke-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
             stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
           </svg>
-          <span class="ml-2 text-sm font-medium">Berichten</span>
-          <span class="absolute top-0 left-0 w-2 h-2 mt-2 ml-2 bg-indigo-500 rounded-full"></span>
+          <span class="ml-2 text-sm font-medium">Prompts</span>
         </a>
       </div>
     </div>

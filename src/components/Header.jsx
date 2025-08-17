@@ -1,12 +1,18 @@
 import { Menu, Bell } from 'lucide-react';
 import userLogo from '../assets/img/user3.png';
 
-export default function Header() {
+export default function Header({ currentPage }) {
+
+  const pageTitles = {
+    home: 'Dashboard',
+    prompts: 'Prompt beheer',
+  }
+
   return (
     <header className="w-full h-16 bg-white border-b flex items-center justify-between px-4 shadow-sm">
       {/* Linkerkant: Sidebar toggle en titel */}
       <div className="flex items-center space-x-4">
-        <h1 className="text-xl font-semibold text-gray-800">Dashboard</h1>
+        <h1 className="text-xl font-semibold text-gray-800">{pageTitles[currentPage] || 'Dashboard'}</h1>
       </div>
 
       {/* Rechterkant: Notificaties en Profiel */}
