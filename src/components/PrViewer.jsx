@@ -1,16 +1,13 @@
-// src/components/PrViewer.jsx
 import { useEffect, useMemo, useState } from "react";
 import { Octokit } from "@octokit/rest";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-/**
- * Zelfstandige helpers – geen extra imports nodig
- */
+
 function parsePrUrl(url) {
   try {
     const u = new URL(url);
-    // /owner/repo/pull/123
+    
     const parts = u.pathname.split("/").filter(Boolean);
     const owner = parts[0];
     const repo = parts[1];
@@ -47,20 +44,21 @@ function createOctokit() {
   return new Octokit(token ? { auth: token } : {});
 }
 
-/**
- * REST helpers naar je backend (Stap 4)
- */
-async function runAiReview(prUrl) {
+async function runAiReview(prUrl, promptId) {
   const res = await fetch("/api/ai/review-pr", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prUrl }),
+    body: JSON.stringify({
+      prUrl,
+      // Alleen meesturen als er iets gekozen is
+      ...(promptId ? { promptId: Number(promptId) } : {})
+    }),
   });
   if (!res.ok) {
     const j = await res.json().catch(() => ({}));
     throw new Error(j.error || "AI review failed");
   }
-  return res.json(); // { headSha, findings }
+  return res.json();
 }
 
 async function postGhReview({ prUrl, headSha, comments, summary }) {
@@ -76,30 +74,35 @@ async function postGhReview({ prUrl, headSha, comments, summary }) {
   return res.json();
 }
 
-/**
- * Het component
- */
+
 export default function PrViewer() {
-  // PR ophalen
+  
   const [prUrl, setPrUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [files, setFiles] = useState([]); // [{ filename, additions, deletions, status, sha, patch }]
+  const [files, setFiles] = useState([]); 
   const [headSha, setHeadSha] = useState("");
 
-  // Bestandsweergave
-  const [selected, setSelected] = useState(null); // { filename, content, lang }
+  const [selected, setSelected] = useState(null);
   const [line, setLine] = useState(1);
 
-  // AI
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
-  const [aiFindings, setAiFindings] = useState([]); // alle bestanden
-  const [edited, setEdited] = useState({}); // key -> Finding (bewerkt)
+  const [aiFindings, setAiFindings] = useState([]); 
+  const [edited, setEdited] = useState({}); 
 
-  // UI helpers
   const fileList = useMemo(() => files, [files]);
   const lineCount = selected ? selected.content.split("\n").length : 0;
+
+  const [prompts, setPrompts] = useState([]);
+  const [selectedPromptId, setSelectedPromptId] = useState("");
+
+  useEffect(() => {
+  fetch('/api/prompts')
+    .then(res => res.json())
+    .then(setPrompts)
+    .catch(() => setPrompts([]));
+}, []);
 
   const findingsForSelected = useMemo(
     () => aiFindings.filter((f) => selected && f.file === selected.filename),
@@ -129,12 +132,10 @@ export default function PrViewer() {
       const { owner, repo, number } = parsePrUrl(prUrl);
       const octokit = createOctokit();
 
-      // PR + head sha
       const pr = await octokit.pulls.get({ owner, repo, pull_number: number });
       const sha = pr.data.head.sha;
       setHeadSha(sha);
 
-      // Bestandenlijst incl. patches (unified diff)
       const filesRes = await octokit.pulls.listFiles({
         owner,
         repo,
@@ -153,7 +154,7 @@ export default function PrViewer() {
 
       setFiles(prFiles);
 
-      // Laad eerste tekstbestand
+     
       const firstText = prFiles.find(
         (f) => !/\.(png|jpg|jpeg|gif|svg|pdf|mp4|mov|zip|lock)$/i.test(f.filename)
       );
@@ -180,7 +181,6 @@ export default function PrViewer() {
       const lang = languageFromFilename(path);
       setSelected({ filename: path, content: decoded, lang });
 
-      // reset lijnselectie
       const lines = decoded.split("\n").length;
       setLine(Math.min(line, lines) || 1);
     } catch (e) {
@@ -197,7 +197,7 @@ export default function PrViewer() {
     setEdited({});
     try {
       setAiLoading(true);
-      const { headSha: sha, findings } = await runAiReview(prUrl);
+      const { headSha: sha, findings } = await runAiReview(prUrl, selectedPromptId || undefined);
       setHeadSha(sha);
       setAiFindings(findings || []);
     } catch (e) {
@@ -212,13 +212,11 @@ export default function PrViewer() {
       alert("Laad eerst een PR en voer een AI-review uit.");
       return;
     }
-    // Neem alle findings (alle files), met edits toegepast
     const chosen = aiFindings.map((f) => edited[keyOf(f)] ?? f);
 
-    // Map naar GitHub review comments
     const comments = chosen.map((f) => ({
       path: f.file,
-      line: f.start_line, // let op: inline comment kan alleen op regels in de diff
+      line: f.start_line, 
       body:
         `[${(f.severity || "info").toUpperCase()}] ${f.rule}: ${f.message}` +
         (f.suggestion ? `\n\nSuggestie: ${f.suggestion}` : ""),
@@ -239,7 +237,7 @@ export default function PrViewer() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* PR invoer */}
+      
       <div className="flex gap-2">
         <input
           type="url"
@@ -256,6 +254,22 @@ export default function PrViewer() {
         </button>
       </div>
 
+      <div className="flex items-center gap-2 mb-2">
+  <label className="text-sm text-gray-700">Prompt:</label>
+  <select
+    value={selectedPromptId}
+    onChange={(e) => setSelectedPromptId(e.target.value)}
+    className="border rounded px-2 py-1"
+  >
+    <option value="">Standaard prompt</option>
+    {prompts.map((p) => (
+      <option key={p.id} value={p.id}>
+        {p.title}
+      </option>
+    ))}
+  </select>
+</div>
+
       {(error || aiError) && (
         <div className="text-red-600 text-sm">
           {error || aiError}
@@ -265,7 +279,7 @@ export default function PrViewer() {
         <div className="text-gray-600 text-sm">Bezig…</div>
       )}
 
-      {/* Actieknoppen */}
+      
       <div className="flex gap-2">
         <button
           onClick={onAiReview}
@@ -283,7 +297,6 @@ export default function PrViewer() {
 
       {fileList.length > 0 && (
         <div className="flex gap-4">
-          {/* Bestanden */}
           <aside className="w-72 border rounded p-3 h-[70vh] overflow-auto">
             <h3 className="font-semibold mb-2">Bestanden in PR</h3>
             <ul className="space-y-1">
@@ -310,7 +323,7 @@ export default function PrViewer() {
             </ul>
           </aside>
 
-          {/* Code + feedback */}
+          
           <main className="flex-1 grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4">
             <div className="border rounded p-3 h-[70vh] overflow-auto">
               {selected ? (
@@ -335,7 +348,7 @@ export default function PrViewer() {
               )}
             </div>
 
-            {/* Feedback zijpaneel */}
+            
             <div className="border rounded p-3 h-[70vh] overflow-auto">
               <h3 className="font-semibold mb-3">AI-findings (dit bestand)</h3>
               {selected && findingsForSelected.length === 0 && (

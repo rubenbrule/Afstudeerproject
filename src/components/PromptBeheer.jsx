@@ -52,7 +52,7 @@ export default function PromptBeheer() {
 
   if (!response.ok) {
     const errorText = await response.text()
-    console.error("❌ Fout bij toevoegen:", errorText)
+    console.error("Fout bij toevoegen:", errorText)
     alert("Fout bij toevoegen van prompt")
     return
   }
@@ -67,9 +67,9 @@ export default function PromptBeheer() {
   const updatedList = await updated.json()
   setPrompts(updatedList)
 
-  alert("✅ Prompt succesvol toegevoegd")
+  alert("Prompt succesvol toegevoegd")
 } catch (err) {
-  console.error("❌ Netwerkfout:", err)
+  console.error("Netwerkfout:", err)
   alert("Fout bij versturen van prompt")
 }
   }
@@ -78,7 +78,7 @@ export default function PromptBeheer() {
     <div className="flex gap-4">
       {/* Promptlijst */}
       <div className="w-1/3 border-r pr-4">
-        <h2 className="font-semibold text-lg mb-2">📄 Prompts</h2>
+        <h2 className="font-semibold text-lg mb-2">Prompts</h2>
         <ul className="space-y-2">
           {prompts.map((prompt) => (
             <li key={prompt.id}>
@@ -95,7 +95,7 @@ export default function PromptBeheer() {
 
       {/* Prompt detailpaneel */}
       <div className="w-2/3">
-      <h2 className="font-semibold text-lg mb-2">➕ Nieuwe prompt</h2>
+      <h2 className="font-semibold text-lg mb-2">Nieuwe prompt</h2>
 
 <form onSubmit={handleAddPrompt} className="space-y-2">
   <input
@@ -127,7 +127,7 @@ export default function PromptBeheer() {
 
         {selectedPrompt ? (
           <div>
-            <h2 className="font-semibold text-lg mb-2">✏️ Bewerken</h2>
+            <h2 className="font-semibold text-lg mb-2">Bewerken</h2>
             <input
               name="title"
               value={selectedPrompt.title}

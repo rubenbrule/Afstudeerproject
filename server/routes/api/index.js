@@ -1,4 +1,3 @@
-// server/routes/api/index.js
 import express from 'express'
 import prompts from './prompts.js'
 
