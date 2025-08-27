@@ -22,6 +22,21 @@ function parsePrUrl(url) {
   return { owner, repo, number: Number(number) };
 }
 
+// Zet alles op één regel en escape HTML tags
+function oneLine(text) {
+  if (text == null) return '';
+  return String(text)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u2028|\u2029/g, ' ')
+    .replace(/\n+/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    // ▼ Escape < en > zodat HTML tags letterlijk zichtbaar zijn
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .trim();
+}
+
 function changedHeadLinesFromPatch(patch = '') {
   const lines = patch.split('\n');
   const changed = new Set();
@@ -110,17 +125,32 @@ if (!parsed) {
 
     const out = [];
     for (const it of (parsed?.findings || [])) {
-      const file  = it.file || it.path || it.filename;
-      const start = Number(it.start_line) || 0;
-      const end   = Number(it.end_line) || start;
+      const file = it.file || it.path || it.filename;
       if (!file || !changeMap[file]) continue;
 
-      const changed = changeMap[file]; 
+      const changed = changeMap[file]; // Set<number>
+      if (!changed || changed.size === 0) continue;
+
+      // 1) Neem AI-waarden als ze er zijn
+      let start = Number(it.start_line) || 0;
+      let end   = Number(it.end_line)   || start;
+
+      // 2) Fallback als AI niets bruikbaars gaf
+      if (start <= 0 || end <= 0) {
+        const firstChanged = Math.min(...changed);
+        start = firstChanged;
+        end   = firstChanged;
+      }
+
+      // 3) Als het bereik geen gewijzigde regel raakt, klemmen we naar de eerste gewijzigde regel
       let touches = false;
       for (let ln = start; ln <= end; ln++) {
         if (changed.has(ln)) { touches = true; break; }
       }
-      if (!touches) continue;
+      if (!touches) {
+        const firstChanged = Math.min(...changed);
+        start = end = firstChanged;
+      }
 
       out.push({
         file,
@@ -253,7 +283,6 @@ function tryJson(text) {
   return { findings: [] };
 }
 
-
 app.post('/api/gh/review', async (req, res) => {
   try {
     const { prUrl, headSha, comments, summary } = req.body;
@@ -264,10 +293,15 @@ app.post('/api/gh/review', async (req, res) => {
     const review = await octokit.pulls.createReview({
       owner, repo, pull_number: number,
       commit_id: headSha,
-      body: summary || 'AI-gegenereerde feedback (beoordeeld door docent).',
+      // ▼ Zet de algemene reviewtekst op één regel
+      body: oneLine(summary || 'AI-gegenereerde feedback (beoordeeld door docent).'),
       event: 'COMMENT',
+      // ▼ Zet elke inline comment op één regel
       comments: (comments || []).map(c => ({
-        path: c.path, line: c.line, side: 'RIGHT', body: c.body
+        path: c.path,
+        line: c.line,
+        side: 'RIGHT',
+        body: oneLine(c.body)
       }))
     });
 
