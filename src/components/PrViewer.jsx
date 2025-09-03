@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Octokit } from "@octokit/rest";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { Trash2 } from "lucide-react";
 
 
 function parsePrUrl(url) {
@@ -97,6 +98,11 @@ export default function PrViewer() {
   const [prompts, setPrompts] = useState([]);
   const [selectedPromptId, setSelectedPromptId] = useState("");
 
+  // --- Nieuw: modal voor handmatige feedback ---
+  const [newFbOpen, setNewFbOpen] = useState(false);
+  const [newFbLine, setNewFbLine] = useState(null);
+  const [newFbText, setNewFbText] = useState("");
+
   useEffect(() => {
   fetch('/api/prompts')
     .then(res => res.json())
@@ -117,6 +123,49 @@ export default function PrViewer() {
     const k = keyOf(f);
     setEdited((prev) => ({ ...prev, [k]: { ...f, ...(prev[k] || {}), ...patch } }));
   }
+
+  function handleLineClick(lineNumber) {
+  if (!selected) return;
+  setNewFbLine(lineNumber);
+  setNewFbText("");
+  setNewFbOpen(true);
+}
+
+function removeFinding(f) {
+  const k = keyOf(f);
+  // Verwijder het item uit de lijst
+  setAiFindings((prev) => prev.filter((x) => keyOf(x) !== k));
+  // Opruimen van eventuele bewerkingen op dit item
+  setEdited((prev) => {
+    const next = { ...prev };
+    delete next[k];
+    return next;
+  });
+}
+
+// Snippet tonen met een paar regels context rondom de gekozen regel
+const modalSnippet = useMemo(() => {
+  if (!selected || !newFbOpen || !newFbLine) return { code: "", start: 1 };
+  const lines = selected.content.split("\n");
+  const start = Math.max(1, newFbLine - 2);
+  const end   = Math.min(lines.length, newFbLine + 2);
+  return { code: lines.slice(start - 1, end).join("\n"), start };
+}, [selected, newFbOpen, newFbLine]);
+
+function addManualFeedback() {
+  if (!selected || !newFbLine || !newFbText.trim()) return;
+  const newItem = {
+    file: selected.filename,
+    start_line: newFbLine,
+    end_line: newFbLine,
+    rule: "Handmatig",
+    severity: "suggestion",
+    message: newFbText.trim(),
+    suggestion: "",
+  };
+  setAiFindings(prev => [...prev, newItem]);
+  setNewFbOpen(false);
+}
 
   async function loadPr() {
     setError("");
@@ -281,12 +330,12 @@ export default function PrViewer() {
 
       
       <div className="flex gap-2">
-        <button
+        {/* <button
           onClick={onAiReview}
           className="bg-violet-600 text-white px-3 py-2 rounded hover:bg-violet-700"
         >
           AI review
-        </button>
+        </button> */}
         <button
           onClick={onPostReview}
           className="bg-emerald-600 text-white px-3 py-2 rounded hover:bg-emerald-700"
@@ -337,6 +386,10 @@ export default function PrViewer() {
                     wrapLines
                     showLineNumbers
                     lineNumberStyle={{ opacity: 0.6 }}
+                    lineProps={(lineNumber) => ({
+                      onClick: () => handleLineClick(lineNumber),
+                      style: { cursor: "pointer" },
+                    })}
                   >
                     {selected.content}
                   </SyntaxHighlighter>
@@ -350,7 +403,15 @@ export default function PrViewer() {
 
             
             <div className="border rounded p-3 h-[70vh] overflow-auto">
-              <h3 className="font-semibold mb-3">AI-findings (dit bestand)</h3>
+              <div className="flex items-center justify-between mb-3">
+  <h3 className="font-semibold">AI-findings (dit bestand)</h3>
+  <button
+    onClick={onAiReview}
+    className="bg-violet-600 text-white px-3 py-1 rounded hover:bg-violet-700 text-sm"
+  >
+    AI review
+  </button>
+</div>
               {selected && findingsForSelected.length === 0 && (
                 <div className="text-sm text-gray-500">
                   Nog geen AI-feedback of geen issues in dit bestand.
@@ -362,10 +423,20 @@ export default function PrViewer() {
                 const cur = edited[k] ?? f;
                 return (
                   <div key={k} className="border rounded p-2 mb-3">
-                    <div className="text-xs text-gray-500 mb-1">
-                      Regel {cur.start_line}
-                      {cur.end_line !== cur.start_line ? `–${cur.end_line}` : ""} •{" "}
-                      {cur.severity} • {cur.rule}
+                    <div className="flex items-start justify-between mb-1">
+                      <div className="text-xs text-gray-500">
+                        Regel {cur.start_line}
+                        {cur.end_line !== cur.start_line ? `–${cur.end_line}` : ""} • {cur.severity} • {cur.rule}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeFinding(f)}
+                        className="text-gray-500 hover:text-red-600 ml-2"
+                        title="Verwijderen"
+                        aria-label="Verwijderen"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                     <textarea
                       className="w-full border rounded px-2 py-1 mb-2"
@@ -387,6 +458,67 @@ export default function PrViewer() {
           </main>
         </div>
       )}
+      {newFbOpen && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center">
+    {/* overlay */}
+    <div
+      className="absolute inset-0 bg-black/40"
+      onClick={() => setNewFbOpen(false)}
+    />
+    {/* modal */}
+    <div className="relative bg-white w-[min(900px,95vw)] max-h-[85vh] rounded-xl shadow p-4 overflow-auto">
+      <h3 className="font-semibold text-lg mb-3">
+        Nieuwe feedback — {selected?.filename} • regel {newFbLine}
+      </h3>
+
+      {/* code snippet met Prism, met juiste startregel en highlight van de gekozen regel */}
+      <div className="border rounded mb-3 overflow-hidden">
+        <SyntaxHighlighter
+          language={selected?.lang || undefined}
+          style={vscDarkPlus}
+          showLineNumbers
+          wrapLines
+          startingLineNumber={modalSnippet.start}
+          lineNumberStyle={{ opacity: 0.6 }}
+          lineProps={(ln) =>
+            ln === newFbLine
+              ? { style: { background: "rgba(255,225,0,0.18)" } }
+              : {}
+          }
+        >
+          {modalSnippet.code}
+        </SyntaxHighlighter>
+      </div>
+
+      <label className="block text-sm font-medium mb-1">Feedback</label>
+      <textarea
+        className="w-full border rounded px-2 py-1"
+        rows={4}
+        placeholder="Beschrijf de feedback voor deze regel…"
+        value={newFbText}
+        onChange={(e) => setNewFbText(e.target.value)}
+      />
+
+      <div className="flex justify-end gap-2 mt-4">
+        <button
+          type="button"
+          className="px-4 py-2 rounded border hover:bg-gray-50"
+          onClick={() => setNewFbOpen(false)}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+          disabled={!newFbText.trim()}
+          onClick={addManualFeedback}
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  </div>
+)}
     </div>
   );
 }
