@@ -75,6 +75,30 @@ async function postGhReview({ prUrl, headSha, comments, summary }) {
   return res.json();
 }
 
+// Parseer een Git diff 'patch' naar een Set met 'nieuwe' (toegevoegde) regelnummers in het nieuwe bestand.
+function parseAddedLinesFromPatch(patch = "") {
+  const added = new Set();
+  if (!patch) return added;
+
+  let newLine = 0;
+  for (const l of patch.split("\n")) {
+    if (l.startsWith("@@")) {
+      // @@ -oldStart,oldCount +newStart,newCount @@
+      const m = l.match(/\+(\d+)(?:,(\d+))?/);
+      if (m) newLine = parseInt(m[1], 10) - 1; // we verhogen bij de volgende relevante regel
+      continue;
+    }
+    if (l.startsWith(" ") || l.startsWith("+")) {
+      newLine += 1;               // context of toevoeging telt mee in 'nieuwe' tellers
+      if (l.startsWith("+")) {
+        added.add(newLine);       // alleen '+' regels zijn commentable (RIGHT)
+      }
+    }
+    // '-' (verwijderd) verhoogt alleen oldLine, niet newLine → negeren voor RIGHT
+  }
+  return added;
+}
+
 
 export default function PrViewer() {
   
@@ -98,6 +122,9 @@ export default function PrViewer() {
   const [prompts, setPrompts] = useState([]);
   const [selectedPromptId, setSelectedPromptId] = useState("");
 
+  const [hoverLine, setHoverLine] = useState(null);
+  const [relinkFinding, setRelinkFinding] = useState(null);
+
   // --- Nieuw: modal voor handmatige feedback ---
   const [newFbOpen, setNewFbOpen] = useState(false);
   const [newFbLine, setNewFbLine] = useState(null);
@@ -115,6 +142,15 @@ export default function PrViewer() {
     [aiFindings, selected]
   );
 
+  const addedLinesForSelected = useMemo(() => {
+  if (!selected) return null;
+  const f = files.find((x) => x.filename === selected.filename);
+  if (!f?.patch) return null;
+  return parseAddedLinesFromPatch(f.patch);
+}, [files, selected]);
+
+  const canPostSelected = !!selected && findingsForSelected.length > 0;
+
   function keyOf(f) {
     return `${f.file}:${f.start_line}-${f.end_line}:${f.rule}`;
   }
@@ -126,6 +162,13 @@ export default function PrViewer() {
 
   function handleLineClick(lineNumber) {
   if (!selected) return;
+  // 1) Relink-modus actief? -> koppel de aangeklikte regel aan dat bestaande feedback-item
+  if (relinkFinding) {
+    updateFinding(relinkFinding, { start_line: lineNumber, end_line: lineNumber });
+    setRelinkFinding(null);
+    return;
+  }
+  // 2) Anders: normale flow voor "nieuwe feedback toevoegen" via modal
   setNewFbLine(lineNumber);
   setNewFbText("");
   setNewFbOpen(true);
@@ -257,32 +300,39 @@ function addManualFeedback() {
   }
 
   async function onPostReview() {
-    if (!prUrl || !headSha) {
-      alert("Laad eerst een PR en voer een AI-review uit.");
-      return;
-    }
-    const chosen = aiFindings.map((f) => edited[keyOf(f)] ?? f);
-
-    const comments = chosen.map((f) => ({
-      path: f.file,
-      line: f.start_line, 
-      body:
-        `[${(f.severity || "info").toUpperCase()}] ${f.rule}: ${f.message}` +
-        (f.suggestion ? `\n\nSuggestie: ${f.suggestion}` : ""),
-    }));
-
-    try {
-      await postGhReview({
-        prUrl,
-        headSha,
-        comments,
-        summary: "AI-feedback per regel (gecontroleerd en waar nodig aangepast door docent).",
-      });
-      alert("Review geplaatst!");
-    } catch (e) {
-      alert(`Mislukt: ${e.message}`);
-    }
+  if (!prUrl || !headSha) {
+    alert("Laad eerst een PR en voer een AI-review uit.");
+    return;
   }
+
+  const comments = aiFindings
+    .map((f) => {
+      const cur = edited[keyOf(f)] ?? f; // ← ALTJD de edited variant
+      const suggestion = (cur.suggestion ?? "").trim();
+      if (!suggestion) return null;      // sla lege suggesties over
+      return {
+        path: cur.file,
+        line: Number(cur.start_line),    // ← jouw aangepaste regelnummer
+        body: suggestion,                // ← alleen de onderste textbox
+      };
+    })
+    .filter(Boolean);
+
+  // kleine debug is handig:
+  console.log("POST comments:", comments);
+
+  try {
+    await postGhReview({
+      prUrl,
+      headSha,
+      comments,
+      summary: "AI-feedback per regel (gecontroleerd en waar nodig aangepast door docent).",
+    });
+    alert("Review geplaatst!");
+  } catch (e) {
+    alert(`Mislukt: ${e.message}`);
+  }
+}
 
   return (
     <div className="flex flex-col gap-4">
@@ -303,46 +353,17 @@ function addManualFeedback() {
         </button>
       </div>
 
-      <div className="flex items-center gap-2 mb-2">
-  <label className="text-sm text-gray-700">Prompt:</label>
-  <select
-    value={selectedPromptId}
-    onChange={(e) => setSelectedPromptId(e.target.value)}
-    className="border rounded px-2 py-1"
-  >
-    <option value="">Standaard prompt</option>
-    {prompts.map((p) => (
-      <option key={p.id} value={p.id}>
-        {p.title}
-      </option>
-    ))}
-  </select>
-</div>
-
       {(error || aiError) && (
         <div className="text-red-600 text-sm">
           {error || aiError}
         </div>
       )}
-      {(loading || aiLoading) && (
+      {/* {(loading || aiLoading) && (
         <div className="text-gray-600 text-sm">Bezig…</div>
-      )}
+      )} */}
 
       
-      <div className="flex gap-2">
-        {/* <button
-          onClick={onAiReview}
-          className="bg-violet-600 text-white px-3 py-2 rounded hover:bg-violet-700"
-        >
-          AI review
-        </button> */}
-        <button
-          onClick={onPostReview}
-          className="bg-emerald-600 text-white px-3 py-2 rounded hover:bg-emerald-700"
-        >
-          Post review
-        </button>
-      </div>
+      
 
       {fileList.length > 0 && (
         <div className="flex gap-4">
@@ -386,10 +407,15 @@ function addManualFeedback() {
                     wrapLines
                     showLineNumbers
                     lineNumberStyle={{ opacity: 0.6 }}
-                    lineProps={(lineNumber) => ({
-                      onClick: () => handleLineClick(lineNumber),
-                      style: { cursor: "pointer" },
-                    })}
+                    lineProps={(lineNumber) => {
+                      const isAdded = addedLinesForSelected?.has(lineNumber);
+                      return {
+                        onClick: isAdded ? () => handleLineClick(lineNumber) : undefined,
+                        className: `transition-colors ${isAdded ? "" : "opacity-50"}`,
+                        style: { cursor: isAdded ? "pointer" : "not-allowed", display: "block" },
+                        title: isAdded ? "Klik om feedback toe te voegen" : "Niet rechtstreeks commentable (niet in diff)",
+                      };
+                    }}
                   >
                     {selected.content}
                   </SyntaxHighlighter>
@@ -402,76 +428,113 @@ function addManualFeedback() {
             </div>
 
             
-            <div className="border rounded p-3 h-[70vh] overflow-auto">
+            <div className="border rounded p-3 h-[70vh] flex flex-col">
               <div className="flex items-center justify-between mb-3">
-  <h3 className="font-semibold">AI-findings (dit bestand)</h3>
-  <button
-    onClick={onAiReview}
-    className="bg-violet-600 text-white px-3 py-1 rounded hover:bg-violet-700 text-sm"
+                <h3 className="font-semibold">AI-findings (dit bestand)</h3>
+                <button
+                  onClick={onAiReview}
+                  className="bg-violet-600 text-white px-3 py-1 rounded hover:bg-violet-700 text-sm"
+                >
+                  AI review
+                </button>
+              </div>
+
+              {(loading || aiLoading) && (
+  <div className="text-xs text-gray-500 mb-2">Bezig…</div>
+)}
+
+<div className="flex items-center gap-2 mb-3">
+  <label className="text-sm text-gray-700">Prompt:</label>
+  <select
+    value={selectedPromptId}
+    onChange={(e) => setSelectedPromptId(e.target.value)}
+    className="border rounded px-2 py-1"
   >
-    AI review
+    <option value="">Standaard prompt</option>
+    {prompts.map((p) => (
+      <option key={p.id} value={p.id}>
+        {p.title}
+      </option>
+    ))}
+  </select>
+</div>
+
+{/* scrollbare content */}
+<div className="flex-1 overflow-auto">
+  {selected && findingsForSelected.length === 0 && (
+    <div className="text-sm text-gray-500">
+      Nog geen AI-feedback of geen issues in dit bestand.
+    </div>
+  )}
+
+  {findingsForSelected.map((f) => {
+    const k = keyOf(f);
+    const cur = edited[k] ?? f;
+    return (
+      <div key={k} className="border rounded p-2 mb-3">
+        <div className="flex items-start justify-between mb-1">
+      <div className="text-xs text-gray-500">
+        Regel {cur.start_line}
+    {cur.end_line !== cur.start_line ? `–${cur.end_line}` : ""} • {cur.severity} • {cur.rule}
+  </div>
+
+  <button
+    type="button"
+    onClick={() => removeFinding(f)}
+    className="text-gray-500 hover:text-red-600 ml-2"
+    title="Verwijderen"
+    aria-label="Verwijderen"
+  >
+    <Trash2 className="w-4 h-4" />
   </button>
 </div>
-              {selected && findingsForSelected.length === 0 && (
-                <div className="text-sm text-gray-500">
-                  Nog geen AI-feedback of geen issues in dit bestand.
-                </div>
-              )}
 
-              {findingsForSelected.map((f) => {
-                const k = keyOf(f);
-                const cur = edited[k] ?? f;
-                return (
-                  <div key={k} className="border rounded p-2 mb-3">
-                    <div className="flex items-start justify-between mb-1">
-                      <div className="text-xs text-gray-500">
-                        Regel {cur.start_line}
-                        {cur.end_line !== cur.start_line ? `–${cur.end_line}` : ""} • {cur.severity} • {cur.rule}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeFinding(f)}
-                        className="text-gray-500 hover:text-red-600 ml-2"
-                        title="Verwijderen"
-                        aria-label="Verwijderen"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                    <textarea
-                      className="w-full border rounded px-2 py-1 mb-2"
-                      rows={3}
-                      value={cur.message}
-                      onChange={(e) => updateFinding(f, { message: e.target.value })}
-                    />
-                    <textarea
-                      className="w-full border rounded px-2 py-1"
-                      rows={2}
-                      placeholder="Suggestie…"
-                      value={cur.suggestion || ""}
-                      onChange={(e) => updateFinding(f, { suggestion: e.target.value })}
-                    />
-                  </div>
-                );
-              })}
+        <textarea
+          className="w-full border rounded px-2 py-1 mb-2"
+          rows={3}
+          value={cur.message}
+          onChange={(e) => updateFinding(f, { message: e.target.value })}
+        />
+        <textarea
+          className="w-full border rounded px-2 py-1"
+          rows={2}
+          placeholder="Suggestie…"
+          value={cur.suggestion || ""}
+          onChange={(e) => updateFinding(f, { suggestion: e.target.value })}
+        />
+      </div>
+    );
+  })}
+</div>
+
+{/* vaste footer onderaan panel */}
+<div className="pt-2 mt-2 border-t">
+  <button
+    onClick={onPostReview}
+    disabled={!canPostSelected}
+    className={`w-full px-4 py-2 rounded text-white transition
+      ${canPostSelected ? "bg-emerald-600 hover:bg-emerald-700" : "bg-gray-300 cursor-not-allowed"}
+    `}
+    title={canPostSelected ? "Post review naar GitHub" : "Geen feedback voor dit bestand"}
+  >
+    Post review
+  </button>
+</div>
             </div>
           </main>
         </div>
       )}
       {newFbOpen && (
   <div className="fixed inset-0 z-50 flex items-center justify-center">
-    {/* overlay */}
     <div
       className="absolute inset-0 bg-black/40"
       onClick={() => setNewFbOpen(false)}
     />
-    {/* modal */}
     <div className="relative bg-white w-[min(900px,95vw)] max-h-[85vh] rounded-xl shadow p-4 overflow-auto">
       <h3 className="font-semibold text-lg mb-3">
         Nieuwe feedback — {selected?.filename} • regel {newFbLine}
       </h3>
 
-      {/* code snippet met Prism, met juiste startregel en highlight van de gekozen regel */}
       <div className="border rounded mb-3 overflow-hidden">
         <SyntaxHighlighter
           language={selected?.lang || undefined}
@@ -494,7 +557,7 @@ function addManualFeedback() {
       <textarea
         className="w-full border rounded px-2 py-1"
         rows={4}
-        placeholder="Beschrijf de feedback voor deze regel…"
+        placeholder="Feedback voor deze regel..."
         value={newFbText}
         onChange={(e) => setNewFbText(e.target.value)}
       />
