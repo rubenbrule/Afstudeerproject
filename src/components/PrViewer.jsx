@@ -8,7 +8,6 @@ import { Trash2 } from "lucide-react";
 function parsePrUrl(url) {
   try {
     const u = new URL(url);
-    
     const parts = u.pathname.split("/").filter(Boolean);
     const owner = parts[0];
     const repo = parts[1];
@@ -39,7 +38,7 @@ function createOctokit() {
   const token = import.meta.env.VITE_GH_TOKEN;
   if (!token) {
     console.warn(
-      "VITE_GH_TOKEN ontbreekt. Publieke repos kunnen deels werken (rate limit), maar inline comments posten vereist auth."
+      "VITE_GH_TOKEN ontbreekt."
     );
   }
   return new Octokit(token ? { auth: token } : {});
@@ -75,7 +74,6 @@ async function postGhReview({ prUrl, headSha, comments, summary }) {
   return res.json();
 }
 
-// Parseer een Git diff 'patch' naar een Set met 'nieuwe' (toegevoegde) regelnummers in het nieuwe bestand.
 function parseAddedLinesFromPatch(patch = "") {
   const added = new Set();
   if (!patch) return added;
@@ -83,18 +81,17 @@ function parseAddedLinesFromPatch(patch = "") {
   let newLine = 0;
   for (const l of patch.split("\n")) {
     if (l.startsWith("@@")) {
-      // @@ -oldStart,oldCount +newStart,newCount @@
       const m = l.match(/\+(\d+)(?:,(\d+))?/);
-      if (m) newLine = parseInt(m[1], 10) - 1; // we verhogen bij de volgende relevante regel
+      if (m) newLine = parseInt(m[1], 10) - 1;
       continue;
     }
     if (l.startsWith(" ") || l.startsWith("+")) {
-      newLine += 1;               // context of toevoeging telt mee in 'nieuwe' tellers
+      newLine += 1;               
       if (l.startsWith("+")) {
-        added.add(newLine);       // alleen '+' regels zijn commentable (RIGHT)
+        added.add(newLine);
       }
     }
-    // '-' (verwijderd) verhoogt alleen oldLine, niet newLine → negeren voor RIGHT
+    
   }
   return added;
 }
@@ -203,8 +200,8 @@ function addManualFeedback() {
     end_line: newFbLine,
     rule: "Handmatig",
     severity: "suggestion",
-    message: newFbText.trim(),
-    suggestion: "",
+    message: "Handmatige feedback",
+    suggestion: newFbText.trim(),
   };
   setAiFindings(prev => [...prev, newItem]);
   setNewFbOpen(false);
@@ -347,7 +344,7 @@ function addManualFeedback() {
         />
         <button
           onClick={loadPr}
-          className="bg-indigo-600 text-white px-4 py-2 rounded hover:bg-indigo-700"
+          className="bg-[#d96b30] text-white px-4 py-2 rounded hover:bg-[#c25f2b]"
         >
           Ophalen
         </button>
