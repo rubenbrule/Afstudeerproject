@@ -5,6 +5,12 @@ import { Octokit } from '@octokit/rest';
 import OpenAI from 'openai';
 import apiRoutes from './routes/api/index.js';
 import { getPrompt } from './db/prompts.js';
+import multer from 'multer';
+import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { createPrompt, saveAssistantInfo, addPromptFiles } from './db/prompts.js';
 
 const app = express();
 app.use(cors());
@@ -13,6 +19,7 @@ app.use('/api', apiRoutes)
 
 const octokit = new Octokit({ auth: process.env.GH_TOKEN });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const upload = multer({ storage: multer.memoryStorage() });
 const PORT = process.env.PORT || 3001;
 
 function parsePrUrl(url) {
@@ -22,7 +29,6 @@ function parsePrUrl(url) {
   return { owner, repo, number: Number(number) };
 }
 
-// Haal uit een unified patch ALLE 'nieuwe' (RIGHT) regels (dus alleen '+') als absolute new-file regelnummers
 function parseAddedLinesFromPatch(patch = "") {
   const added = new Set();
   if (!patch) return added;
@@ -30,9 +36,8 @@ function parseAddedLinesFromPatch(patch = "") {
   let newLine = 0;
   for (const l of patch.split("\n")) {
     if (l.startsWith("@@")) {
-      // @@ -oldStart,oldCount +newStart,newCount @@
       const m = l.match(/\+(\d+)(?:,(\d+))?/);
-      if (m) newLine = parseInt(m[1], 10) - 1; // volgende relevante regel wordt +1
+      if (m) newLine = parseInt(m[1], 10) - 1;
       continue;
     }
     if (l.startsWith(" ") || l.startsWith("+")) {
@@ -41,12 +46,10 @@ function parseAddedLinesFromPatch(patch = "") {
         added.add(newLine);
       }
     }
-    // '-' verhoogt alleen oldLine; negeren voor RIGHT
   }
   return added;
 }
 
-// Groepeer opeenvolgende toegevoegde regels in "spans": [[start,end], ...]
 function groupAddedIntoSpans(addedSet) {
   const lines = Array.from(addedSet).sort((a, b) => a - b);
   const spans = [];
@@ -64,8 +67,114 @@ function groupAddedIntoSpans(addedSet) {
   return spans;
 }
 
-// Maak een compact review-blok uit de file-inhoud + toegevoegde regels.
-// We tonen steeds "context" regels erboven/onder en markeren gewijzigde regels met '>>'
+function getPromptFileIds(promptRecord) {
+  if (!promptRecord?.file_ids) return [];
+  try { return JSON.parse(promptRecord.file_ids).map(x => x.id).filter(Boolean); }
+  catch { return []; }
+}
+
+async function ensureAssistantAndStore(prompt) {
+  const wantModel = process.env.OPENAI_ASSISTANT_MODEL || 'gpt-4o';
+
+  if (prompt.assistant_id && prompt.vector_store_id) {
+    try {
+      const asst = await openai.beta.assistants.retrieve(prompt.assistant_id);
+
+      const updates = {};
+
+      // Model forceren
+      if (asst.model !== wantModel) {
+        updates.model = wantModel;
+      }
+
+      // file_search tool afdwingen
+      const tools = Array.isArray(asst.tools) ? asst.tools : [];
+      const hasFileSearch = tools.some(t => t?.type === 'file_search');
+      if (!hasFileSearch) {
+        updates.tools = [...tools, { type: 'file_search' }];
+      }
+
+      // vector store koppeling afdwingen
+      const vsIds = asst?.tool_resources?.file_search?.vector_store_ids || [];
+      if (!vsIds.includes(prompt.vector_store_id)) {
+        updates.tool_resources = {
+          file_search: { vector_store_ids: [prompt.vector_store_id] }
+        };
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await openai.beta.assistants.update(prompt.assistant_id, updates);
+        console.log('[ensure] assistant updated →', updates);
+      }
+    } catch (e) {
+      console.log('[ensure] retrieve/update assistant failed', e?.message);
+    }
+
+    return {
+      assistant_id: prompt.assistant_id,
+      vector_store_id: prompt.vector_store_id,
+    };
+  }
+
+  const store = await openai.vectorStores.create({
+    name: `prompt-${prompt.id}-store`,
+  });
+
+  const assistant = await openai.beta.assistants.create({
+    name: `Prompt ${prompt.title || prompt.id}`,
+    instructions: prompt.content || 'Gebruik file search voor richtlijnen.',
+    model: wantModel,
+    tools: [{ type: 'file_search' }],
+    tool_resources: { file_search: { vector_store_ids: [store.id] } },
+  });
+
+  await saveAssistantInfo(prompt.id, {
+    assistant_id: assistant.id,
+    vector_store_id: store.id,
+  });
+
+  console.log('[ensure] created assistant & store →', {
+    assistant_id: assistant.id,
+    vector_store_id: store.id,
+  });
+
+  return { assistant_id: assistant.id, vector_store_id: store.id };
+}
+
+// Upload bestanden → Files API → koppelen aan vector store (stable) + index poll
+async function uploadFilesToVectorStore(vector_store_id, fileBlobs) {
+  const uploads = [];
+  const temps = [];
+  try {
+    for (const f of fileBlobs) {
+      const tmpPath = path.join(os.tmpdir(), `${Date.now()}-${Math.random().toString(36).slice(2)}-${f.originalname}`);
+      await fs.writeFile(tmpPath, f.buffer);
+      temps.push(tmpPath);
+
+      const up = await openai.files.create({
+        file: createReadStream(tmpPath),
+        purpose: 'assistants',
+      });
+      uploads.push(up);
+    }
+
+    const out = [];
+    for (const u of uploads) {
+      const link = await openai.vectorStores.files.create(vector_store_id, { file_id: u.id });
+      let linked = await openai.vectorStores.files.retrieve(vector_store_id, link.id);
+      while (linked.status === 'queued' || linked.status === 'in_progress') {
+        await new Promise(r => setTimeout(r, 1000));
+        linked = await openai.vectorStores.files.retrieve(vector_store_id, link.id);
+      }
+      if (linked.status !== 'completed') throw new Error(`Indexing failed: ${u.filename || u.id} (${linked.status})`);
+      out.push({ id: u.id, name: u.filename || u.id });
+    }
+    return out;
+  } finally {
+    await Promise.all(temps.map(p => fs.unlink(p).catch(() => {})));
+  }
+}
+
 function buildReviewBlock(fileContent, addedSet, ctx = 3) {
   const out = [];
   const lines = fileContent.split("\n");
@@ -80,17 +189,15 @@ function buildReviewBlock(fileContent, addedSet, ctx = 3) {
       const gutter = String(ln).padStart(4, " ");
       out.push(`${gutter} | ${mark} ${lines[ln - 1]}`);
     }
-    out.push(""); // lege regel tussen blokken
+    out.push("");
   }
   return out.join("\n").trim();
 }
 
-// Eenvoudige base64 decode helper voor repo content
 function decodeBase64(b64) {
   return Buffer.from(b64, "base64").toString("utf8");
 }
 
-// Zet alles op één regel en escape HTML tags
 function oneLine(text) {
   if (text == null) return '';
   return String(text)
@@ -99,7 +206,6 @@ function oneLine(text) {
     .replace(/\u2028|\u2029/g, ' ')
     .replace(/\n+/g, ' ')
     .replace(/[ \t]{2,}/g, ' ')
-    // ▼ Escape < en > zodat HTML tags letterlijk zichtbaar zijn
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .trim();
@@ -134,94 +240,176 @@ app.post('/api/ai/review-pr', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'prUrl ontbreekt' });
     }
 
-    // Als er een promptId is meegegeven, haal de prompt-tekst op
+    // 1) Prompt record + tekst ophalen
     let selectedPromptText = null;
+    let promptRecord = null;
     if (promptId) {
       try {
-        const p = await getPrompt(promptId);
-        if (p && typeof p.content === 'string' && p.content.trim()) {
-          selectedPromptText = p.content;
+        promptRecord = await getPrompt(Number(promptId));
+        if (promptRecord && typeof promptRecord.content === 'string' && promptRecord.content.trim()) {
+          selectedPromptText = promptRecord.content;
         }
-      } catch (_) {
-        // Negeer fout: val automatisch terug op de default prompt
-      }
+      } catch {}
     }
 
     const { prompt, headSha, changeMap } = await buildPromptFromPR(prUrl, selectedPromptText);
 
-    const ai = await openai.responses.create({
-  model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-  temperature: 0.2,
-  input: prompt,
-  text: {
-    format: {
-      type: 'json_schema',
-      name: 'ReviewFindings',
-      schema: {
-        type: 'object',
-        required: ['findings'],
-        additionalProperties: false,
-        properties: {
-          findings: {
-            type: 'array',
-            items: {
+    let parsed = null;
+
+    const fileIds = getPromptFileIds(promptRecord);
+    const useAssistant = promptRecord?.assistant_id && fileIds.length > 0;
+
+    if (useAssistant) {
+      // Attachments voor file_search
+      const attachments = fileIds.map(id => ({ file_id: id, tools: [{ type: 'file_search' }] }));
+
+const guard = `
+BELANGRIJK (HARD):
+- Lees en volg ALLE richtlijnen uit de bijgevoegde documenten (file search).
+- Als in een document staat dat elke zin moet beginnen met "TESTEST", dan MOET elke 'suggestion' exact met "TESTEST " beginnen.
+- Review ALLEEN regels met '>>' in de prompt. De rest is context.
+- Output is ÉÉN JSON-object met de sleutel "findings" zoals gespecificeerd; GEEN proza buiten dat JSON.
+`.trim();
+
+const thread = await openai.beta.threads.create({
+  messages: [
+    { role: 'user', content: `${prompt}\n\n${guard}`, attachments }
+  ],
+});
+
+try {
+  const msgs0 = await openai.beta.threads.messages.list(thread.id, { limit: 5 });
+  console.log('[thread first message attachments]',
+    (msgs0.data?.[0]?.attachments || []).map(a => ({ file_id: a.file_id, tools: a.tools?.map(t=>t.type) })));
+} catch (e) {
+  console.log('[thread attachments debug failed]', e?.message);
+}
+
+const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
+  assistant_id: promptRecord.assistant_id,
+  tool_choice: 'auto',
+  tool_resources: {
+    file_search: { vector_store_ids: [promptRecord.vector_store_id] }
+  },
+});
+
+if (run.status !== 'completed') {
+  try {
+    const steps = await openai.beta.threads.runs.steps.list(thread.id, run.id);
+    console.log('[assistant steps]', steps.data?.map(s => ({
+      type: s.type, status: s.status, tool: s.step_details?.type
+    })));
+  } catch {}
+  throw new Error(`Assistant run status: ${run.status}`);
+}
+
+try {
+  const steps = await openai.beta.threads.runs.steps.list(thread.id, run.id);
+  console.log('[assistant steps]', steps.data?.map(s => ({
+    type: s.type, status: s.status, tool: s.step_details?.type
+  })));
+} catch (e) {
+  console.log('[assistant steps] couldn’t retrieve', e?.message);
+}
+
+const msgs = await openai.beta.threads.messages.list(thread.id, { limit: 50 });
+const assistantTexts = msgs.data
+  .filter(m => m.role === 'assistant')
+  .sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  .map(m => (m.content || []).map(c => (c.type === 'text' ? c.text?.value : '')).join('\n'))
+  .filter(Boolean);
+
+const fullText = assistantTexts.join('\n').trim();
+
+let jsonStr = fullText;
+if (!/^\s*\{/.test(fullText)) {
+  const m = fullText.match(/\{[\s\S]*\}$/);
+  if (m) jsonStr = m[0];
+}
+parsed = tryJson(jsonStr);
+    } else {
+      const ai = await openai.responses.create({
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        temperature: 0.2,
+        input: prompt,
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'ReviewFindings',
+            schema: {
               type: 'object',
+              required: ['findings'],
               additionalProperties: false,
-              required: ['file','start_line','end_line','severity','rule','message','suggestion'],
               properties: {
-                file:       { type: 'string' },
-                start_line: { type: 'integer' },
-                end_line:   { type: 'integer' },
-                severity:   { type: 'string', enum: ['nit','suggestion','warning','error'] },
-                rule:       { type: 'string' },
-                message:    { type: 'string' },
-                suggestion: { type: 'string' }
+                findings: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['file','start_line','end_line','severity','rule','message','suggestion'],
+                    properties: {
+                      file:       { type: 'string' },
+                      start_line: { type: 'integer' },
+                      end_line:   { type: 'integer' },
+                      severity:   { type: 'string', enum: ['nit','suggestion','warning','error'] },
+                      rule:       { type: 'string' },
+                      message:    { type: 'string' },
+                      suggestion: { type: 'string' }
+                    }
+                  }
+                }
               }
             }
           }
         }
+      });
+
+      parsed = ai.output_parsed;
+      if (!parsed) {
+        const raw = (ai.output_text ?? '').trim();
+        parsed = tryJson(raw);
       }
     }
-  }
-});
-
-let parsed = ai.output_parsed;
-if (!parsed) {
-  const raw = (ai.output_text ?? '').trim();
-  parsed = tryJson(raw);
-}
 
     const out = [];
+    const changeKeys = Object.keys(changeMap || {});
     for (const it of (parsed?.findings || [])) {
       const file = it.file || it.path || it.filename;
-      if (!file || !changeMap[file]) continue;
-
-      const changed = changeMap[file]; // Set<number>
+      if (!file) continue;
+      if (!changeMap[file]) {
+        const base = String(file).replace(/\\/g, '/').split('/').pop();
+        const cand = changeKeys.filter(k => k.endsWith('/' + base) || k === base);
+        if (cand.length === 1) it.file = cand[0];
+      }
+      const resolved = it.file;
+      const changed = changeMap[resolved];
       if (!changed || changed.size === 0) continue;
 
-      // 1) Neem AI-waarden als ze er zijn
       let start = Number(it.start_line) || 0;
       let end   = Number(it.end_line)   || start;
 
-      // 2) Fallback als AI niets bruikbaars gaf
       if (start <= 0 || end <= 0) {
         const firstChanged = Math.min(...changed);
-        start = firstChanged;
-        end   = firstChanged;
+        start = end = firstChanged;
       }
 
-      // 3) Als het bereik geen gewijzigde regel raakt, klemmen we naar de eerste gewijzigde regel
       let touches = false;
       for (let ln = start; ln <= end; ln++) {
         if (changed.has(ln)) { touches = true; break; }
       }
       if (!touches) {
-        const firstChanged = Math.min(...changed);
-        start = end = firstChanged;
+        const changedLines = Array.from(changed).sort((a,b) => a - b);
+        const target = start || end || changedLines[0];
+        let best = changedLines[0], bestDiff = Math.abs(best - target);
+        for (let i = 1; i < changedLines.length; i++) {
+          const d = Math.abs(changedLines[i] - target);
+          if (d < bestDiff) { best = changedLines[i]; bestDiff = d; }
+        }
+        start = end = best;
       }
 
       out.push({
-        file,
+        file: resolved,
         start_line: start,
         end_line: end,
         rule: it.rule || 'review',
@@ -342,7 +530,6 @@ if (!parsed) {
 // }
 
 async function buildPromptFromPR(prUrl, customHeader) {
-  // 1) Header (jouw bestaande default prompt blijft fallback)
   let header = `
 Je bent een strikte code reviewer (HTML/CSS/JS/TS/React).
 
@@ -362,7 +549,6 @@ OPDRACHT:
     header = customHeader.trim();
   }
 
-  // 2) PR-info ophalen
   const { owner, repo, number } = parsePrUrl(prUrl);
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN || process.env.VITE_GH_TOKEN });
 
@@ -373,20 +559,18 @@ OPDRACHT:
     owner, repo, pull_number: number, per_page: 100,
   });
 
-  // 3) Per bestand: patch parsen, content ophalen, relevante blokken maken
   const promptParts = [];
-  const changeMap = {}; // file -> Set(newLine) van toegelaten regels
+  const changeMap = {};
 
   for (const f of filesRes.data) {
     const { filename, status, patch } = f;
 
-    // Sla binaire/zonder patch bestanden over
     if (!patch || /^(removed|renamed)$/i.test(status)) continue;
 
     const addedSet = parseAddedLinesFromPatch(patch);
-    if (!addedSet || addedSet.size === 0) continue; // niets relevants
+    if (!addedSet || addedSet.size === 0) continue; 
 
-    // Repo file-inhoud ophalen op headSha
+    
     try {
       const contentRes = await octokit.repos.getContent({
         owner, repo, path: filename, ref: headSha,
@@ -395,7 +579,7 @@ OPDRACHT:
       if (Array.isArray(contentRes.data) || !contentRes.data.content) continue;
       const content = decodeBase64(contentRes.data.content.replace(/\n/g, ""));
 
-      // Bouw het compacte blok met context en >> markering
+      
       const block = buildReviewBlock(content, addedSet, /*context*/ 3);
 
       promptParts.push(
@@ -406,14 +590,11 @@ OPDRACHT:
         ].join("\n")
       );
 
-      // Bewaar de toegestane regels voor server-side validatie achteraf
       changeMap[filename] = addedSet;
     } catch {
-      // kon de content niet ophalen (bijv. groot/binary) -> sla over
+      
     }
   }
-
-  // 4) Eindprompt samenstellen
   const filesSection = promptParts.join("\n\n---\n\n");
   const fullPrompt = `${header}\n\n${filesSection}`.trim();
 
@@ -440,10 +621,8 @@ app.post('/api/gh/review', async (req, res) => {
     const review = await octokit.pulls.createReview({
       owner, repo, pull_number: number,
       commit_id: headSha,
-      // ▼ Zet de algemene reviewtekst op één regel
       body: oneLine(summary || 'AI-gegenereerde feedback (beoordeeld door docent).'),
       event: 'COMMENT',
-      // ▼ Zet elke inline comment op één regel
       comments: (comments || []).map(c => ({
         path: c.path,
         line: c.line,
@@ -461,5 +640,32 @@ app.post('/api/gh/review', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`API server op http://localhost:${PORT}`);
+});
+
+app.post('/api/prompts/create-with-files', upload.array('files', 10), async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    if (!title || !content) return res.status(400).json({ error: 'title en content zijn verplicht' });
+
+    
+    const prompt = await createPrompt({ title, content });
+
+    
+    const { vector_store_id, assistant_id } = await ensureAssistantAndStore(prompt);
+
+    
+    const fileBlobs = (req.files || []).map(f => ({ buffer: f.buffer, originalname: f.originalname }));
+    let added = [];
+    if (fileBlobs.length > 0) {
+      added = await uploadFilesToVectorStore(vector_store_id, fileBlobs);
+      await addPromptFiles(prompt.id, added);
+    }
+
+    
+    res.json({ ok: true, prompt: { ...prompt, assistant_id, vector_store_id, file_ids: JSON.stringify(added) } });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || 'Aanmaken met files gefaald' });
+  }
 });
 
