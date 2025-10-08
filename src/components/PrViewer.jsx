@@ -422,6 +422,7 @@ function addManualFeedback() {
                   Selecteer een bestand links om de code te bekijken.
                 </div>
               )}
+              
             </div>
 
             
@@ -445,7 +446,7 @@ function addManualFeedback() {
   <select
     value={selectedPromptId}
     onChange={(e) => setSelectedPromptId(e.target.value)}
-    className="border rounded px-2 py-1"
+    className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
   >
     <option value="">Standaard prompt</option>
     {prompts.map((p) => (
@@ -485,13 +486,7 @@ function addManualFeedback() {
     <Trash2 className="w-4 h-4" />
   </button>
 </div>
-
-        <textarea
-          className="w-full border rounded px-2 py-1 mb-2"
-          rows={3}
-          value={cur.message}
-          onChange={(e) => updateFinding(f, { message: e.target.value })}
-        />
+        <p className="mb-2">{cur.message}</p>
         <textarea
           className="w-full border rounded px-2 py-1"
           rows={2}
@@ -503,6 +498,9 @@ function addManualFeedback() {
     );
   })}
 </div>
+<p className="mt-2 text-sm text-gray-600 italic">
+  Klik op een regelnummer om handmatig feedback toe te voegen
+</p>
 
 {/* vaste footer onderaan panel */}
 <div className="pt-2 mt-2 border-t">
