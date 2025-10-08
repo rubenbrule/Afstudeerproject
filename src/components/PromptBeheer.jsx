@@ -8,7 +8,10 @@ export default function PromptBeheer() {
   const [createFiles, setCreateFiles] = useState([]);
   const [saveNotice, setSaveNotice] = useState(false);
 
-  // ✨ Nieuw: sorteerkeuze + popup state
+  const [linkedFiles, setLinkedFiles] = useState([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+
+  // Sorteerkeuze
   const [sortBy, setSortBy] = useState('default') // 'default' | 'az' | 'za'
   const [newPromptOpen, setNewPromptOpen] = useState(false)
 
@@ -19,7 +22,21 @@ export default function PromptBeheer() {
       .then(setPrompts)
   }, [])
 
-  // ✨ Nieuw: gesorteerde weergave
+  //..
+  useEffect(() => {
+  if (!selectedPrompt?.id) {
+    setLinkedFiles([]);
+    return;
+  }
+  setFilesLoading(true);
+  fetch(`/api/prompts/${selectedPrompt.id}/files`)
+    .then(r => r.ok ? r.json() : [])
+    .then(data => setLinkedFiles(Array.isArray(data) ? data : []))
+    .catch(() => setLinkedFiles([]))
+    .finally(() => setFilesLoading(false));
+}, [selectedPrompt?.id]);
+
+  // Gesorteerde weergave
   const sortedPrompts = useMemo(() => {
     const arr = [...prompts]
     if (sortBy === 'az') {
@@ -31,7 +48,6 @@ export default function PromptBeheer() {
         (b.title || '').localeCompare(a.title || '', 'nl', { sensitivity: 'base' })
       )
     }
-    // default: volgorde uit API (meestal created_at DESC)
     return arr
   }, [prompts, sortBy])
 
@@ -342,6 +358,41 @@ const hasFiles = fileCount > 0;
               rows="6"
               className="w-full p-2 border mb-2"
             />
+
+<div className="mb-3">
+  <div className="flex items-center gap-2 text-sm text-gray-700">
+    <span className="font-medium">Gekoppelde bestanden</span>
+    {filesLoading && <span className="text-gray-500">laden…</span>}
+    {!filesLoading && linkedFiles.length === 0 && (
+      <span className="text-gray-500">— geen</span>
+    )}
+  </div>
+
+  {!filesLoading && linkedFiles.length > 0 && (
+    <ul className="mt-1 space-y-1">
+      {linkedFiles.map((f) => (
+        <li key={f.id} className="flex items-center gap-2 text-sm text-gray-800">
+          {/* paperclip-icoon */}
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+               fill="none" stroke="currentColor" strokeWidth="1.6"
+               className="h-4 w-4 text-gray-500">
+            <path d="M21 15V7a5 5 0 0 0-10 0v10a3 3 0 0 0 6 0V9" />
+          </svg>
+          <span className="truncate">{f.filename || f.id}</span>
+          {typeof f.bytes === 'number' && (
+            <span className="text-gray-500 text-xs">
+              ({Math.round(f.bytes / 1024)} kB)
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  )}
+</div>
+
+
+
+
             <div className="flex gap-2">
               <button
   type="button"
@@ -486,6 +537,48 @@ const hasFiles = fileCount > 0;
                   onChange={(e) => setCreateFiles(Array.from(e.target.files || []))}
                   className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-md file:border file:border-gray-300 file:bg-white file:px-3 file:py-1.5 file:text-sm file:font-medium hover:file:bg-gray-50"
                 />
+
+<div className="mt-3 rounded-md border border-gray-300 bg-gray-50 p-3 text-sm text-gray-700">
+  <p className="mb-2 font-medium text-gray-800">Toegestane bestandstypen:</p>
+  <div className="flex flex-wrap gap-2">
+    {[
+      '.txt',
+      '.md',
+      '.csv',
+      '.json',
+      '.log',
+      '.pdf',
+      '.docx',
+      '.pptx',
+      '.xlsx',
+      '.js',
+      '.jsx',
+      '.ts',
+      '.py',
+      '.java',
+      '.html',
+      '.css',
+      '.c',
+      '.cpp'
+    ].map((ext) => (
+      <span
+        key={ext}
+        className="rounded-md border border-gray-400 bg-white px-2 py-0.5 font-mono text-xs text-gray-700"
+      >
+        {ext}
+      </span>
+    ))}
+  </div>
+
+  <p className="mt-3 text-xs text-gray-600">
+    Afbeeldingen, audio, video en zip-bestanden worden niet ondersteund door OpenAI.
+  </p>
+</div>
+
+
+
+
+
                 {createFiles.length > 0 && (
                   <ul className="text-xs text-gray-600 list-disc pl-5 space-y-0.5">
                     {createFiles.map((f, i) => (
