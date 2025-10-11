@@ -1,4 +1,5 @@
 import express from 'express'
+import { ensureAssistantHasVectorStore, waitVectorStoreReady, runAndWait } from '../../lib/openai-helpers.js';
 import OpenAI from 'openai'
 import {
   getAllPrompts,
@@ -179,8 +180,52 @@ router.get('/:id/files', async (req, res) => {
   }
 });
 
+// GET /api/prompts/:id/self-test
+// Doet 3 checks: (1) assistant gekoppeld aan vector store, (2) vector store files klaar, (3) test-run uitvoeren
+router.get('/:id/self-test', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const prompt = await getPrompt(id);
+    if (!prompt) return res.status(404).json({ error: 'Prompt not found' });
 
+    const { assistant_id: assistantId, vector_store_id: vectorStoreId } = prompt;
 
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(400).json({ error: 'OPENAI_API_KEY ontbreekt in server/.env' });
+    }
+    if (!assistantId) {
+      return res.status(400).json({ error: 'assistant_id ontbreekt op deze prompt (maak/opslaan met files)' });
+    }
+    if (!vectorStoreId) {
+      return res.status(400).json({ error: 'vector_store_id ontbreekt op deze prompt (files niet/krom gekoppeld)' });
+    }
 
+    // 1) Koppeling afdwingen
+    await ensureAssistantHasVectorStore(assistantId, vectorStoreId);
+
+    // 2) Wachten tot indexeren klaar is (faalt vroeg als er mis is)
+    await waitVectorStoreReady(vectorStoreId);
+
+    // 3) Test-run
+    const result = await runAndWait({
+      assistantId,
+      userText: 'Gebruik file_search op de gekoppelde bestanden en antwoord heel kort: "ok".'
+    });
+
+    // Antwoord terug met maximale debug-info
+    return res.json({
+      ok: result.status === 'completed',
+      status: result.status,
+      last_error: result.last_error || null,
+      threadId: result.threadId,
+      hint: result.status !== 'completed'
+        ? 'Zie "status" en "last_error". Meest voorkomend: files nog in_progress, of tool_resources niet gekoppeld.'
+        : undefined
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Self-test failed', detail: err?.message || String(err) });
+  }
+});
 
 export default router

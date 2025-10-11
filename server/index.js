@@ -233,6 +233,77 @@ function changedHeadLinesFromPatch(patch = '') {
   return changed;
 }
 
+
+// --- helpers: compat voor assistants/vector stores + readiness check ---
+
+async function ensureAssistantHasVectorStoreCompat(assistantId, vectorStoreId) {
+  // gebruik nieuwe API als beschikbaar, anders beta.*
+  const assistants = openai.assistants ?? openai.beta?.assistants;
+  if (!assistants) throw new Error('OpenAI assistants API niet beschikbaar');
+
+  const a = await assistants.retrieve(assistantId);
+
+  // 1) file_search tool aanzetten indien nodig
+  const tools = Array.isArray(a.tools) ? a.tools : [];
+  const hasFileSearch = tools.some(t => t?.type === 'file_search');
+  const update = {};
+  if (!hasFileSearch) update.tools = [...tools, { type: 'file_search' }];
+
+  // 2) vector store koppelen indien nodig
+  const currentVS = a?.tool_resources?.file_search?.vector_store_ids || [];
+  if (!currentVS.includes(vectorStoreId)) {
+    update.tool_resources = {
+      file_search: { vector_store_ids: [...currentVS, vectorStoreId] }
+    };
+  }
+
+  if (Object.keys(update).length) {
+    await assistants.update(assistantId, update);
+  }
+}
+
+async function waitVectorStoreReadyCompat(vectorStoreId, { pollMs = 1200, timeoutMs = 60000 } = {}) {
+  const vectorStores = openai.vectorStores ?? openai.beta?.vector_stores;
+  if (!vectorStores) throw new Error('OpenAI vectorStores API niet beschikbaar');
+
+  const t0 = Date.now();
+  while (true) {
+    // pagineer met limit 100 (max)
+    let all = [];
+    let after;
+    do {
+      const page = await vectorStores.files.list(vectorStoreId, { limit: 100, after });
+      all = all.concat(page?.data || []);
+      after = page?.last_id || undefined;
+      if (!page?.has_more) break;
+    } while (true);
+
+    if (all.length === 0) return; // geen files = niets te wachten
+
+    // status per file ophalen
+    const statuses = [];
+    for (const f of all) {
+      try {
+        const meta = await openai.files.retrieve(f.id);
+        statuses.push(meta?.status || 'unknown');
+      } catch {
+        statuses.push('unknown');
+      }
+    }
+
+    const inProgress = statuses.some(s => s === 'in_progress');
+    const failed = statuses.some(s => s === 'failed');
+    if (failed) throw new Error('Vector store indexing failed voor een of meer files');
+    if (!inProgress) return; // alles klaar
+
+    if (Date.now() - t0 > timeoutMs) throw new Error('Vector store indexing timeout');
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+}
+
+
+
+
 app.post('/api/ai/review-pr', async (req, res) => {
   try {
     const { prUrl, promptId } = req.body;
@@ -261,7 +332,10 @@ app.post('/api/ai/review-pr', async (req, res) => {
 
     if (useAssistant) {
       // Attachments voor file_search
-      const attachments = fileIds.map(id => ({ file_id: id, tools: [{ type: 'file_search' }] }));
+      const attachments = fileIds.map((id) => ({
+  file_id: id,
+  tools: [{ type: 'file_search' }],
+}));
 
 const guard = `
 BELANGRIJK (HARD):
@@ -271,36 +345,91 @@ BELANGRIJK (HARD):
 - Output is ÉÉN JSON-object met de sleutel "findings" zoals gespecificeerd; GEEN proza buiten dat JSON.
 `.trim();
 
+// ✅ checks toevoegen (NIEUW)
+  await ensureAssistantHasVectorStoreCompat(promptRecord.assistant_id, promptRecord.vector_store_id);
+  await waitVectorStoreReadyCompat(promptRecord.vector_store_id);
+
+// const thread = await openai.beta.threads.create({
+//   messages: [
+//     { role: 'user', content: `${prompt}\n\n${guard}`, attachments }
+//   ],
+// });
+
+// try {
+//   const msgs0 = await openai.beta.threads.messages.list(thread.id, { limit: 5 });
+//   console.log('[thread first message attachments]',
+//     (msgs0.data?.[0]?.attachments || []).map(a => ({ file_id: a.file_id, tools: a.tools?.map(t=>t.type) })));
+// } catch (e) {
+//   console.log('[thread attachments debug failed]', e?.message);
+// }
+
+// const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
+//   assistant_id: promptRecord.assistant_id,
+//   tool_choice: 'auto',
+//   tool_resources: {
+//     file_search: { vector_store_ids: [promptRecord.vector_store_id] }
+//   },
+// });
+
+// if (run.status !== 'completed') {
+//   try {
+//     const steps = await openai.beta.threads.runs.steps.list(thread.id, run.id);
+//     console.log('[assistant steps]', steps.data?.map(s => ({
+//       type: s.type, status: s.status, tool: s.step_details?.type
+//     })));
+//   } catch {}
+//   throw new Error(`Assistant run status: ${run.status}`);
+// }
+// Thread + eerste user message met attachments
 const thread = await openai.beta.threads.create({
   messages: [
     { role: 'user', content: `${prompt}\n\n${guard}`, attachments }
   ],
 });
 
-try {
-  const msgs0 = await openai.beta.threads.messages.list(thread.id, { limit: 5 });
-  console.log('[thread first message attachments]',
-    (msgs0.data?.[0]?.attachments || []).map(a => ({ file_id: a.file_id, tools: a.tools?.map(t=>t.type) })));
-} catch (e) {
-  console.log('[thread attachments debug failed]', e?.message);
-}
-
-const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
+// ▶️ Start run (zonder createAndPoll) zodat we zelf netjes kunnen loggen
+let run = await openai.beta.threads.runs.create(thread.id, {
   assistant_id: promptRecord.assistant_id,
+  // tool_choice mag 'auto' blijven; tool_resources koppelen we hier ook nog
   tool_choice: 'auto',
   tool_resources: {
     file_search: { vector_store_ids: [promptRecord.vector_store_id] }
   },
 });
 
-if (run.status !== 'completed') {
-  try {
-    const steps = await openai.beta.threads.runs.steps.list(thread.id, run.id);
-    console.log('[assistant steps]', steps.data?.map(s => ({
-      type: s.type, status: s.status, tool: s.step_details?.type
-    })));
-  } catch {}
-  throw new Error(`Assistant run status: ${run.status}`);
+// 🔄 Poll expliciet en log status/last_error netjes
+const startedAt = Date.now();
+const POLL_MS = 1200;
+const TIMEOUT_MS = 120000;
+
+while (true) {
+  run = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+
+  // optioneel: debug
+  // console.log('[run status]', run.status, run.required_action || '');
+
+  if (run.status === 'completed') break;
+
+  if (run.status === 'requires_action') {
+    // Voor file_search hoef je niets te doen (geen tool outputs vereist)
+    // Andere tools (function calling) vereisen hier outputs. Zo niet → later fail.
+    // console.warn('[requires_action]', JSON.stringify(run.required_action, null, 2));
+  }
+
+  if (['failed', 'expired', 'cancelled'].includes(run.status)) {
+    console.error('[assistant run failed]', {
+      status: run.status,
+      last_error: run.last_error,
+      usage: run.usage
+    });
+    throw new Error(`Assistant run status: ${run.status}${run.last_error?.message ? ' — ' + run.last_error.message : ''}`);
+  }
+
+  if (Date.now() - startedAt > TIMEOUT_MS) {
+    throw new Error('Assistant run timeout');
+  }
+
+  await new Promise((r) => setTimeout(r, POLL_MS));
 }
 
 try {
