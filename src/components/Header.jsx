@@ -1,21 +1,22 @@
-import { Menu, Bell } from 'lucide-react';
-import userLogo from '../assets/img/user3.png';
+import { Menu, Bell } from "lucide-react";
+import userLogo from "../assets/img/user3.png";
 
 export default function Header({ currentPage }) {
-
   const pageTitles = {
-    home: 'Dashboard',
-    prompts: 'Prompt beheer',
-  }
+    home: "Dashboard",
+    prompts: "Prompt beheer",
+  };
 
   return (
     <header className="w-full h-16 bg-white border-b flex items-center justify-between px-4 shadow-sm">
-      {/* Linkerkant: Sidebar toggle en titel */}
+      {/* Linkerkant: Sidebar menu */}
       <div className="flex items-center space-x-4">
-        <h1 className="text-xl font-semibold text-gray-800">{pageTitles[currentPage] || 'Dashboard'}</h1>
+        <h1 className="text-xl font-semibold text-gray-800">
+          {pageTitles[currentPage] || "Dashboard"}
+        </h1>
       </div>
 
-      {/* Rechterkant: Notificaties en Profiel */}
+      {/* Rechterkant: Profiel */}
       <div className="flex items-center space-x-4">
         <button className="p-2 text-gray-500 hover:text-gray-700">
           <Menu size={20} />
@@ -32,4 +33,3 @@ export default function Header({ currentPage }) {
     </header>
   );
 }
-

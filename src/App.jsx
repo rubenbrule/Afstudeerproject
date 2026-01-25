@@ -5,7 +5,7 @@ import PrViewer from './components/PrViewer'
 import PromptBeheer from './components/PromptBeheer'
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState('home') // 'home' of 'prompts'
+  const [currentPage, setCurrentPage] = useState('home')
 
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
