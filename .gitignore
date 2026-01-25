@@ -29,7 +29,7 @@ dist/
 .vite/
 coverage/
 
-# Env (nooit committen!)
+# env
 .env
 .env.*
 !.env.example

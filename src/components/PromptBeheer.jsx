@@ -9,7 +9,7 @@ export default function PromptBeheer() {
   const [saveNotice, setSaveNotice] = useState(false);
   const [linkedFiles, setLinkedFiles] = useState([]);
   const [filesLoading, setFilesLoading] = useState(false);
-  const [sortBy, setSortBy] = useState("default"); // 'default' | 'az' | 'za'
+  const [sortBy, setSortBy] = useState("default");
   const [newPromptOpen, setNewPromptOpen] = useState(false);
 
   // Ophalen prompts
@@ -182,29 +182,20 @@ export default function PromptBeheer() {
               const raw = prompt.file_ids;
 
               if (!raw) return 0;
-
-              // 1) Als het al een array is
               if (Array.isArray(raw)) {
                 return new Set(raw.filter(Boolean)).size;
               }
-
-              // 2) Als het een string is
               if (typeof raw === "string") {
-                // Probeer JSON te parsen (bv. '["file_abc"]')
                 try {
                   const parsed = JSON.parse(raw);
                   if (Array.isArray(parsed)) {
                     return new Set(parsed.filter(Boolean)).size;
                   }
                 } catch (_) {
-                  // geen JSON; ga door naar fallback
                 }
-
-                // 3) Fallback: haal alléén echte file-ids uit de string
                 const ids = raw.match(/file_[a-zA-Z0-9]+/g) || [];
                 return new Set(ids).size;
               }
-
               return 0;
             })();
 
@@ -229,7 +220,7 @@ export default function PromptBeheer() {
                       : "bg-white",
                   ].join(" ")}
                 >
-                  {/* Accentbalk links als de prompt is geselecteerd */}
+                  {/* Gekleurd stukje linkerkant als de prompt is geselecteerd */}
                   {isSelected && (
                     <span
                       aria-hidden="true"
@@ -301,7 +292,7 @@ export default function PromptBeheer() {
         </ul>
       </div>
 
-      {/* Prompt detailpaneel */}
+      {/* Prompt detail scherm */}
       <div className="w-2/3">
         {selectedPrompt ? (
           <div>

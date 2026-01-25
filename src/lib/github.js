@@ -7,7 +7,7 @@ export function createOctokit() {
   return new Octokit({ auth: token });
 }
 
-// Parsed een Github PR url naar {owner, repo, numer}
+// Zet een GitHub PR om naar losse onderdelen (owner, repo, number)
 export function parsePrUrl(url) {
   try {
     const u = new URL(url);
@@ -19,7 +19,7 @@ export function parsePrUrl(url) {
   }
 }
 
-// Bepaalt highlight-taal uit bestandsnaam (voor react-syntax-highlighter / Prism)
+// Bepaalt welke taal gebruikt moet worden voor code-highlighting (voor react-syntax-highlighter / Prism)
 export function languageFromFilename(filename) {
   const lower = filename.toLowerCase();
   if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs"))
