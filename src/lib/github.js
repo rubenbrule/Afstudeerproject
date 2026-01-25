@@ -1,12 +1,13 @@
 import { Octokit } from "@octokit/rest";
 
+// Maakt een Github API client (Octokit) aan met de persoonlijke token uit .env
 export function createOctokit() {
   const token = import.meta.env.VITE_GH_TOKEN;
   if (!token) throw new Error("VITE_GH_TOKEN ontbreekt in .env.local");
   return new Octokit({ auth: token });
 }
 
-/** Parse: https://github.com/<owner>/<repo>/pull/<number> */
+// Parsed een Github PR url naar {owner, repo, numer}
 export function parsePrUrl(url) {
   try {
     const u = new URL(url);
@@ -18,10 +19,11 @@ export function parsePrUrl(url) {
   }
 }
 
-/** Bepaal Prism-taal uit bestandsnaam */
+// Bepaalt highlight-taal uit bestandsnaam (voor react-syntax-highlighter / Prism)
 export function languageFromFilename(filename) {
   const lower = filename.toLowerCase();
-  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) return "javascript";
+  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs"))
+    return "javascript";
   if (lower.endsWith(".jsx")) return "jsx";
   if (lower.endsWith(".ts")) return "typescript";
   if (lower.endsWith(".tsx")) return "tsx";
@@ -30,5 +32,5 @@ export function languageFromFilename(filename) {
   if (lower.endsWith(".css")) return "css";
   if (lower.endsWith(".md")) return "markdown";
   if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
-  return ""; // fallback: auto
+  return "";
 }

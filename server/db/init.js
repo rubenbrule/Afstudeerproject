@@ -1,4 +1,3 @@
-// server/db/init.js
 import fs from 'fs'
 import db from './db.js'
 
