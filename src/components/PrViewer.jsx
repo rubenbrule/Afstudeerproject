@@ -3,32 +3,11 @@ import { Octokit } from "@octokit/rest";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { Trash2 } from "lucide-react";
+import { runAiReview, postGhReview } from "../lib/api";
+import { parsePrUrl, languageFromFilename, createOctokit, parseAddedLinesFromPatch } from "../lib/github";
 
 import {runAiReview, postGhReview} from "../lib/api";
 import {createOctokit, parsePrUrl, languageFromFilename} from "../lib/github";
-
-// Deze functie selecteert de code die is toegevoegd of veranderd is in de PR
-// dit wordt later gebruikt om de regels klikbaar te maken (in de code viewer) waarop feedback gegeven kan worden 
-function parseAddedLinesFromPatch(patch = "") {
-  const added = new Set();
-  if (!patch) return added;
-
-  let newLine = 0;
-  for (const l of patch.split("\n")) {
-    if (l.startsWith("@@")) {
-      const m = l.match(/\+(\d+)(?:,(\d+))?/);
-      if (m) newLine = parseInt(m[1], 10) - 1;
-      continue;
-    }
-    if (l.startsWith(" ") || l.startsWith("+")) {
-      newLine += 1;
-      if (l.startsWith("+")) {
-        added.add(newLine);
-      }
-    }
-  }
-  return added;
-}
 
 export default function PrViewer() {
   const [prUrl, setPrUrl] = useState("");
@@ -269,10 +248,31 @@ export default function PrViewer() {
           "Feedback",
       });
       alert("Review geplaatst!");
+      resetViewer();
     } catch (e) {
       alert(`Mislukt: ${e.message}`);
     }
   }
+
+  function resetViewer() {
+  setPrUrl("");
+  setLoading(false);
+  setError("");
+  setFiles([]);
+  setHeadSha("");
+  setSelected(null);
+  setLine(1);
+  setAiLoading(false);
+  setAiError("");
+  setAiFindings([]);
+  setEdited({});
+  setHoverLine(null);
+  setRelinkFinding(null);
+  setNewFbOpen(false);
+  setNewFbLine(null);
+  setNewFbText("");
+  setSelectedPromptId("");
+}
 
   return (
     <div className="flex flex-col gap-4">
