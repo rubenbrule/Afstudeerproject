@@ -3,17 +3,22 @@ import { Octokit } from "@octokit/rest";
 // Maakt een Github API client (Octokit) aan met de persoonlijke token uit .env
 export function createOctokit() {
   const token = import.meta.env.VITE_GH_TOKEN;
-  if (!token) throw new Error("VITE_GH_TOKEN ontbreekt in .env.local");
-  return new Octokit({ auth: token });
+  if (!token) {
+    console.warn("VITE_GH_TOKEN ontbreekt.");
+  }
+  return new Octokit(token ? { auth: token } : {});
 }
 
 // Parsed een Github PR url naar {owner, repo, numer}
 export function parsePrUrl(url) {
   try {
     const u = new URL(url);
-    const [owner, repo, , number] = u.pathname.split("/").slice(1);
-    if (!owner || !repo || !number) throw new Error("Geen geldige PR-URL");
-    return { owner, repo, number: Number(number) };
+    const parts = u.pathname.split("/").filter(Boolean);
+    const owner = parts[0];
+    const repo = parts[1];
+    const number = Number(parts[3]);
+    if (!owner || !repo || !number) throw new Error("Ongeldige PR-URL");
+    return { owner, repo, number };
   } catch {
     throw new Error("Ongeldige PR-URL");
   }
@@ -22,15 +27,36 @@ export function parsePrUrl(url) {
 // Bepaalt highlight-taal uit bestandsnaam (voor react-syntax-highlighter / Prism)
 export function languageFromFilename(filename) {
   const lower = filename.toLowerCase();
-  if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs"))
-    return "javascript";
-  if (lower.endsWith(".jsx")) return "jsx";
-  if (lower.endsWith(".ts")) return "typescript";
   if (lower.endsWith(".tsx")) return "tsx";
+  if (lower.endsWith(".ts")) return "ts";
+  if (lower.endsWith(".jsx")) return "jsx";
+  if (lower.endsWith(".js")) return "javascript";
   if (lower.endsWith(".json")) return "json";
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
   if (lower.endsWith(".css")) return "css";
+  if (lower.endsWith(".scss")) return "scss";
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
   if (lower.endsWith(".md")) return "markdown";
   if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
-  return "";
+  return undefined;
+}
+
+export function parseAddedLinesFromPatch(patch = "") {
+  const added = new Set();
+  if (!patch) return added;
+
+  let newLine = 0;
+  for (const l of patch.split("\n")) {
+    if (l.startsWith("@@")) {
+      const m = l.match(/\+(\d+)(?:,(\d+))?/);
+      if (m) newLine = parseInt(m[1], 10) - 1;
+      continue;
+    }
+    if (l.startsWith(" ") || l.startsWith("+")) {
+      newLine += 1;
+      if (l.startsWith("+")) {
+        added.add(newLine);
+      }
+    }
+  }
+  return added;
 }

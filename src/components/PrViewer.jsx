@@ -3,102 +3,8 @@ import { Octokit } from "@octokit/rest";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { Trash2 } from "lucide-react";
-
-// Parse een GitHub PR url
-// verwacht urls als: https://github.com/<owner>/<repo>/pull/<number>
-function parsePrUrl(url) {
-  try {
-    const u = new URL(url);
-    const parts = u.pathname.split("/").filter(Boolean);
-    const owner = parts[0];
-    const repo = parts[1];
-    const number = Number(parts[3]);
-    if (!owner || !repo || !number) throw new Error("Ongeldige PR-URL");
-    return { owner, repo, number };
-  } catch {
-    throw new Error("Ongeldige PR-URL");
-  }
-}
-
-// Bepaalt highlight-taal uit bestandsnaam (voor react-syntax-highlighter / Prism)
-function languageFromFilename(name = "") {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".tsx")) return "tsx";
-  if (lower.endsWith(".ts")) return "ts";
-  if (lower.endsWith(".jsx")) return "jsx";
-  if (lower.endsWith(".js")) return "javascript";
-  if (lower.endsWith(".json")) return "json";
-  if (lower.endsWith(".css")) return "css";
-  if (lower.endsWith(".scss")) return "scss";
-  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
-  if (lower.endsWith(".md")) return "markdown";
-  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
-  return undefined;
-}
-
-// Maakt een Octokit client aan met token (VITE_GH_TOKEN) -> te vinden in .env
-function createOctokit() {
-  const token = import.meta.env.VITE_GH_TOKEN;
-  if (!token) {
-    console.warn("VITE_GH_TOKEN ontbreekt.");
-  }
-  return new Octokit(token ? { auth: token } : {});
-}
-
-// Stuurt een PR URL (en prompt id) naar de server (backend) om AI feedback te genereren
-async function runAiReview(prUrl, promptId) {
-  const res = await fetch("/api/ai/review-pr", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      prUrl,
-      // Alleen meesturen als er iets gekozen is
-      ...(promptId ? { promptId: Number(promptId) } : {}),
-    }),
-  });
-  if (!res.ok) {
-    const j = await res.json().catch(() => ({}));
-    throw new Error(j.error || "AI review failed");
-  }
-  return res.json();
-}
-
-// Post de feedback terug naar GitHub
-async function postGhReview({ prUrl, headSha, comments, summary }) {
-  const res = await fetch("/api/gh/review", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prUrl, headSha, comments, summary }),
-  });
-  if (!res.ok) {
-    const j = await res.json().catch(() => ({}));
-    throw new Error(j.error || "Post review failed");
-  }
-  return res.json();
-}
-
-// Deze functie selecteert de code die is toegevoegd of veranderd is in de PR
-// dit wordt later gebruikt om de regels klikbaar te maken (in de code viewer) waarop feedback gegeven kan worden 
-function parseAddedLinesFromPatch(patch = "") {
-  const added = new Set();
-  if (!patch) return added;
-
-  let newLine = 0;
-  for (const l of patch.split("\n")) {
-    if (l.startsWith("@@")) {
-      const m = l.match(/\+(\d+)(?:,(\d+))?/);
-      if (m) newLine = parseInt(m[1], 10) - 1;
-      continue;
-    }
-    if (l.startsWith(" ") || l.startsWith("+")) {
-      newLine += 1;
-      if (l.startsWith("+")) {
-        added.add(newLine);
-      }
-    }
-  }
-  return added;
-}
+import { runAiReview, postGhReview } from "../lib/api";
+import { parsePrUrl, languageFromFilename, createOctokit, parseAddedLinesFromPatch } from "../lib/github";
 
 export default function PrViewer() {
   const [prUrl, setPrUrl] = useState("");
@@ -339,10 +245,31 @@ export default function PrViewer() {
           "AI-feedback per regel (gecontroleerd en waar nodig aangepast door docent).",
       });
       alert("Review geplaatst!");
+      resetViewer();
     } catch (e) {
       alert(`Mislukt: ${e.message}`);
     }
   }
+
+  function resetViewer() {
+  setPrUrl("");
+  setLoading(false);
+  setError("");
+  setFiles([]);
+  setHeadSha("");
+  setSelected(null);
+  setLine(1);
+  setAiLoading(false);
+  setAiError("");
+  setAiFindings([]);
+  setEdited({});
+  setHoverLine(null);
+  setRelinkFinding(null);
+  setNewFbOpen(false);
+  setNewFbLine(null);
+  setNewFbText("");
+  setSelectedPromptId("");
+}
 
   return (
     <div className="flex flex-col gap-4">
