@@ -6,9 +6,6 @@ import { Trash2 } from "lucide-react";
 import { runAiReview, postGhReview } from "../lib/api";
 import { parsePrUrl, languageFromFilename, createOctokit, parseAddedLinesFromPatch } from "../lib/github";
 
-import {runAiReview, postGhReview} from "../lib/api";
-import {createOctokit, parsePrUrl, languageFromFilename} from "../lib/github";
-
 export default function PrViewer() {
   const [prUrl, setPrUrl] = useState("");
   const [loading, setLoading] = useState(false);
