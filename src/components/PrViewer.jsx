@@ -6,6 +6,9 @@ import { Trash2 } from "lucide-react";
 import { runAiReview, postGhReview } from "../lib/api";
 import { parsePrUrl, languageFromFilename, createOctokit, parseAddedLinesFromPatch } from "../lib/github";
 
+import {runAiReview, postGhReview} from "../lib/api";
+import {createOctokit, parsePrUrl, languageFromFilename} from "../lib/github";
+
 export default function PrViewer() {
   const [prUrl, setPrUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -34,7 +37,7 @@ export default function PrViewer() {
   const [newFbLine, setNewFbLine] = useState(null);
   const [newFbText, setNewFbText] = useState("");
 
-  // Laadt de beschikbare prompts bij de eerste render
+  // Laadt de beschikbare prompts
   useEffect(() => {
     fetch("/api/prompts")
       .then((res) => res.json())
@@ -242,7 +245,7 @@ export default function PrViewer() {
         headSha,
         comments,
         summary:
-          "AI-feedback per regel (gecontroleerd en waar nodig aangepast door docent).",
+          "Feedback",
       });
       alert("Review geplaatst!");
       resetViewer();

@@ -67,22 +67,6 @@ router.delete("/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// helper: file_ids uit DB veld (csv of JSON) extraheren
-function parseFileIds(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.filter(Boolean);
-  if (typeof raw === "string") {
-    try {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) return arr.filter(Boolean);
-    } catch {}
-    // fallback: haal alleen echte OpenAI file ids uit vrije tekst/csv
-    const ids = raw.match(/file_[a-zA-Z0-9]+/g) || [];
-    return [...new Set(ids)];
-  }
-  return [];
-}
-
 function parseFileObjects(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.filter((x) => x && x.id);

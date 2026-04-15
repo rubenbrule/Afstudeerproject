@@ -86,28 +86,25 @@ function getPromptFileIds(promptRecord) {
   }
 }
 
+// Zorgt ervoor dat er voor een prompot een OpenAI assistant + vector store bestaat.
+// dit is nodig als we gebruik maken van file_search, zodat AI ook in (gelinkte) documenten kan zoeken.
 async function ensureAssistantAndStore(prompt) {
   const wantModel = process.env.OPENAI_ASSISTANT_MODEL || "gpt-4o";
-
   if (prompt.assistant_id && prompt.vector_store_id) {
     try {
       const asst = await openai.beta.assistants.retrieve(prompt.assistant_id);
 
       const updates = {};
-
-      // Model forceren
       if (asst.model !== wantModel) {
         updates.model = wantModel;
       }
 
-      // file_search tool afdwingen
       const tools = Array.isArray(asst.tools) ? asst.tools : [];
       const hasFileSearch = tools.some((t) => t?.type === "file_search");
       if (!hasFileSearch) {
         updates.tools = [...tools, { type: "file_search" }];
       }
 
-      // vector store koppeling afdwingen
       const vsIds = asst?.tool_resources?.file_search?.vector_store_ids || [];
       if (!vsIds.includes(prompt.vector_store_id)) {
         updates.tool_resources = {
@@ -154,7 +151,7 @@ async function ensureAssistantAndStore(prompt) {
   return { assistant_id: assistant.id, vector_store_id: store.id };
 }
 
-// Upload bestanden → Files API → koppelen aan vector store (stable) + index poll
+// Upload bestanden naar OpenAI en koppelt ze aan een vector store
 async function uploadFilesToVectorStore(vector_store_id, fileBlobs) {
   const uploads = [];
   const temps = [];
@@ -238,44 +235,17 @@ function oneLine(text) {
     .trim();
 }
 
-function changedHeadLinesFromPatch(patch = "") {
-  const lines = patch.split("\n");
-  const changed = new Set();
-  let headLine = 0;
-
-  for (const l of lines) {
-    if (l.startsWith("@@")) {
-      const m = l.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
-      if (m) {
-        headLine = Number(m[1]) - 1;
-      }
-    } else if (l.startsWith(" ")) {
-      headLine += 1;
-    } else if (l.startsWith("+")) {
-      headLine += 1;
-      changed.add(headLine);
-    } else if (l.startsWith("-")) {
-    }
-  }
-  return changed;
-}
-
-// --- helpers: compat voor assistants/vector stores + readiness check ---
-
 async function ensureAssistantHasVectorStoreCompat(assistantId, vectorStoreId) {
-  // gebruik nieuwe API als beschikbaar, anders beta.*
   const assistants = openai.assistants ?? openai.beta?.assistants;
   if (!assistants) throw new Error("OpenAI assistants API niet beschikbaar");
 
   const a = await assistants.retrieve(assistantId);
 
-  // 1) file_search tool aanzetten indien nodig
   const tools = Array.isArray(a.tools) ? a.tools : [];
   const hasFileSearch = tools.some((t) => t?.type === "file_search");
   const update = {};
   if (!hasFileSearch) update.tools = [...tools, { type: "file_search" }];
 
-  // 2) vector store koppelen indien nodig
   const currentVS = a?.tool_resources?.file_search?.vector_store_ids || [];
   if (!currentVS.includes(vectorStoreId)) {
     update.tool_resources = {
@@ -298,7 +268,6 @@ async function waitVectorStoreReadyCompat(
 
   const t0 = Date.now();
   while (true) {
-    // pagineer met limit 100 (max)
     let all = [];
     let after;
     do {
@@ -311,9 +280,8 @@ async function waitVectorStoreReadyCompat(
       if (!page?.has_more) break;
     } while (true);
 
-    if (all.length === 0) return; // geen files = niets te wachten
+    if (all.length === 0) return;
 
-    // status per file ophalen
     const statuses = [];
     for (const f of all) {
       try {
@@ -328,7 +296,7 @@ async function waitVectorStoreReadyCompat(
     const failed = statuses.some((s) => s === "failed");
     if (failed)
       throw new Error("Vector store indexing failed voor een of meer files");
-    if (!inProgress) return; // alles klaar
+    if (!inProgress) return;
 
     if (Date.now() - t0 > timeoutMs)
       throw new Error("Vector store indexing timeout");
@@ -343,7 +311,6 @@ app.post("/api/ai/review-pr", async (req, res) => {
       return res.status(400).json({ ok: false, error: "prUrl ontbreekt" });
     }
 
-    // 1) Prompt record + tekst ophalen
     let selectedPromptText = null;
     let promptRecord = null;
     if (promptId) {
@@ -370,7 +337,6 @@ app.post("/api/ai/review-pr", async (req, res) => {
     const useAssistant = promptRecord?.assistant_id && fileIds.length > 0;
 
     if (useAssistant) {
-      // Attachments voor file_search
       const attachments = fileIds.map((id) => ({
         file_id: id,
         tools: [{ type: "file_search" }],
@@ -393,23 +359,18 @@ BELANGRIJK (HARD):
       function trimTextByChars(str, maxChars) {
         if (!str) return "";
         if (str.length <= maxChars) return str;
-        // knip “netjes” op een regelgrens
         const cut = str.slice(0, maxChars);
         const lastNL = cut.lastIndexOf("\n");
         return (lastNL > 0 ? cut.slice(0, lastNL) : cut) + "\n\n[TRIMMED]";
       }
 
-      // ✂️ knip het samengestelde prompt+guard terug naar ~24k chars (~6k-8k tokens indicatie)
-      // Pas aan naar wens; lager = minder TPM en minder “failed”.
       const MAX_CHARS = 24000;
       const compactPrompt = trimTextByChars(`${prompt}\n\n${guard}`, MAX_CHARS);
 
-      // Thread + eerste user message met attachments (deze code laat je zoals hij is)
       const thread = await openai.beta.threads.create({
         messages: [{ role: "user", content: compactPrompt, attachments }],
       });
 
-      // ▶️ Run starten met retries bij rate_limit_exceeded
       const MAX_RETRIES = 4;
       const POLL_MS = 1200;
       const TIMEOUT_MS = 120000;
@@ -430,8 +391,6 @@ BELANGRIJK (HARD):
           if (run.status === "completed") return run;
 
           if (run.status === "requires_action") {
-            // file_search vereist geen tool outputs; voor andere tools zou je hier outputs moeten aanleveren
-            // console.warn('[requires_action]', JSON.stringify(run.required_action, null, 2));
           }
 
           if (["failed", "expired", "cancelled"].includes(run.status)) {
@@ -454,13 +413,12 @@ BELANGRIJK (HARD):
         }
       }
 
-      // Retry-loop
       let lastRun;
       let attempt = 0;
       while (true) {
         try {
           lastRun = await startAndPollRunOnce();
-          break; // success
+          break; 
         } catch (e) {
           const code = e?.run?.last_error?.code;
           const msg = e?.run?.last_error?.message || e.message || "";
@@ -469,7 +427,6 @@ BELANGRIJK (HARD):
             ? Math.ceil(parseFloat(retryAfterMatch[1]) * 1000)
             : 4000;
 
-          // alleen retried bij rate_limit_exceeded
           const canRetry =
             code === "rate_limit_exceeded" && attempt < MAX_RETRIES;
           if (!canRetry) {
@@ -482,7 +439,7 @@ BELANGRIJK (HARD):
           }
 
           attempt += 1;
-          const backoffMs = retrySeconds + attempt * 1500; // kleine extra backoff per poging
+          const backoffMs = retrySeconds + attempt * 1500;
           console.warn(
             `[rate limit] poging ${attempt}/${MAX_RETRIES} — wachten ${Math.round(
               backoffMs / 1000
@@ -534,7 +491,7 @@ BELANGRIJK (HARD):
       parsed = tryJson(jsonStr);
     } else {
       const ai = await openai.responses.create({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        model: process.env.OPENAI_MODEL || "gpt-4o",
         temperature: 0.2,
         input: prompt,
         text: {
@@ -662,18 +619,111 @@ BELANGRIJK (HARD):
 
 async function buildPromptFromPR(prUrl, customHeader) {
   let header = `
-Je bent een strikte code reviewer (HTML/CSS/JS/TS/React).
+Je bent een ZEER strenge HTML/CSS docent die een programmeeropdracht nakijkt.
+Ga ervan uit dat de code van een student fouten of verbeterpunten bevat.
+Controleer actief en systematisch; wees niet terughoudend.
 
 TAAL:
-- Schrijf ALLE tekst in het NEDERLANDS, kort en duidelijk.
+Schrijf ALLE tekstuele velden (message, suggestion, rule) in het NEDERLANDS.
+Gebruik korte, duidelijke formuleringen; geen ENGELS.
+Leg kort uit WAT fout is en WAAROM het fout of onzuiver is, en HOE het verbeterd moet worden.
 
-OPDRACHT:
-- Review ALLEEN de regels die gemarkeerd zijn met '>>'.
-- Gebruik exact de lijnnummers links in de marge (dit zijn de "nieuwe" file-regelnummers).
-- Rapporteer per finding als JSON object met:
-  { "file": string, "start_line": number, "end_line": number, "rule": string, "severity": "error"|"warning"|"suggestion", "message": string, "suggestion": string }
-- Geef GEEN feedback over regels zonder '>>'.
-- Als er niets te melden is voor een file: geef geen item.
+TERMINOLOGIE (severity):
+- “kleine opmerking”
+- “suggestie”
+- “waarschuwing”
+- “fout”
+- "overig"
+
+CONTEXT & BRONNEN:
+Je krijgt een pull request (PR) diff.
+Beoordeel UITSLUITEND de gewijzigde regels in HEAD (1-based line numbers).
+Ga er niet vanuit dat omliggende code correct is.
+
+ALGEMENE OPDRACHT:
+Controleer de code alsof je een docent bent die punten aftrekt op netheid,
+correctheid, validiteit, toegankelijkheid en best practices.
+
+WAT JE MOET CONTROLEREN (alleen waar de diff aanleiding toe geeft):
+
+1. HTML validiteit & syntax (ALTIJD controleren):
+- Correct openen en sluiten van tags
+- Geen foutieve self-closing tags (bv. <div />, <section />)
+- Geldige nesting (bv. geen <p> om block-elementen)
+- Geen vergeten of dubbele sluit-tags
+- Correct gebruik van void elements (<img>, <br>, <input>, etc.)
+
+2. HTML semantiek & basis:
+- <!doctype html>, <html lang="…">, <head> met <meta charset="utf-8">,
+  viewport meta, <title>, correcte link naar CSS (relatief pad).
+- Kop-hiërarchie: exact één <h1> per pagina, logische volgorde (<h2>, <h3>).
+- Gebruik van semantische elementen waar passend
+  (<header>, <nav>, <main>, <section>, <article>, <footer>).
+- Geen misbruik van <div> als semantisch element duidelijker is.
+
+3. Toegankelijkheid:
+- Afbeeldingen hebben een beschrijvend alt-attribuut
+- Formulieren hebben label/for-koppeling
+- Geen overbodige of foutieve ARIA-attributen
+- Logische volgorde en leesbare structuur
+
+4. Links en assets:
+- Relatieve paden gebruiken
+- Geen hardcoded absolute paden of productie-URL’s zonder reden
+- Geen dode links of ontbrekende bestanden
+
+5. CSS kwaliteit:
+- Vermijd absolute positioning voor layout
+- Geen vaste breedtes die responsiviteit breken
+- Media queries waar nodig
+- Geen overflow of horizontale scrollbars door layoutkeuzes
+- Geen !important tenzij technisch noodzakelijk (dan melden als warning)
+- Consistente units (bij voorkeur rem voor tekst)
+- Consistente kleurdefinitie (hex, rgb, etc.)
+
+6. Netheid & best practices:
+- Geen inline styles voor structurele styling
+- Geen ongebruikte classes of selectors
+- Logische namen
+- Duidelijke en consistente formatting
+
+7. Overige relevante observaties:
+- Benoem ALLES wat technisch of semantisch relevant is,
+  ook als het een kleine fout of onzuiverheid is.
+- Twijfelgevallen mogen als "kleine opmerking" of “suggestie”.
+
+BEPERKINGEN:
+- Beoordeel alleen gewijzigde regels (HEAD).
+- Negeer whitespace-only of comment-only wijzigingen,
+  tenzij ze een regel overtreden.
+- Geen subjectieve design-oordelen.
+
+OUTPUT:
+Retourneer ALLEEN geldig JSON met exact dit schema:
+{
+  "findings": [
+    {
+      "file": "string",
+      "start_line": 0,
+      "end_line": 0,
+      "rule": "string (korte NL naam)",
+      "severity": "kleine opmerking|suggestie|waarschuwing|fout",
+      "message": "korte NL uitleg",
+      "suggestion": "korte NL verbetering of voorbeeld"
+    }
+  ]
+}
+
+BELANGRIJK:
+- Gebruik exacte file-namen uit de diff.
+- Line numbers zijn 1-based in HEAD.
+- Voor één regel: start_line == end_line.
+
+ALS ER GEEN PROBLEMEN ZIJN:
+Maak exact één finding op regel 1 met:
+- severity: "kleine opmerking"
+- rule: "geen opmerkingen"
+- suggestion: "Alles ziet er goed uit"
 `.trim();
 
   if (customHeader && typeof customHeader === "string" && customHeader.trim()) {
